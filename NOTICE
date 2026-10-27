@@ -1,0 +1,6 @@
+Xylum - The X Server
+Copyright (C) 2026 Xylum Foundation
+
+The embedded bitmap font data (crates/xylum-server/src/font_data.rs) was
+rasterized from DejaVu Sans Mono, which is distributed under a free license
+(Bitstream Vera / DejaVu license). See https://dejavu-fonts.github.io/
