@@ -635,6 +635,17 @@ pub enum ClientRequest {
         arcs: Vec<ArcSpec>,
     },
     MapSubwindows { window: u32 },
+    SetInputFocus { focus: u32, revert_to: u8 },
+    CopyArea {
+        src: u32,
+        dst: u32,
+        src_x: i16,
+        src_y: i16,
+        dst_x: i16,
+        dst_y: i16,
+        width: u16,
+        height: u16,
+    },
     OpenFont { fid: u32, name: Vec<u8> },
     CloseFont { fid: u32 },
     QueryFont { fid: u32 },
@@ -878,6 +889,34 @@ impl ClientRequest {
                 }
             }
             9 => ClientRequest::MapSubwindows { window: r.u32()? },
+            62 => {
+                let src = r.u32()?;
+                let dst = r.u32()?;
+                r.skip(4)?;
+                let src_x = r.i16()?;
+                let src_y = r.i16()?;
+                let dst_x = r.i16()?;
+                let dst_y = r.i16()?;
+                let width = r.u16()?;
+                let height = r.u16()?;
+                ClientRequest::CopyArea {
+                    src,
+                    dst,
+                    src_x,
+                    src_y,
+                    dst_x,
+                    dst_y,
+                    width,
+                    height,
+                }
+            }
+            42 => {
+                let focus = r.u32()?;
+                ClientRequest::SetInputFocus {
+                    focus,
+                    revert_to: raw.data,
+                }
+            }
             45 => {
                 let fid = r.u32()?;
                 let name_len = r.u16()? as usize;
@@ -982,7 +1021,11 @@ pub enum ServerReply {
         win_x: i16,
         win_y: i16,
     },
-    GetInputFocus { sequence: u16, focus: u32 },
+    GetInputFocus {
+        sequence: u16,
+        focus: u32,
+        revert_to: u8,
+    },
     QueryExtension {
         sequence: u16,
         present: bool,
@@ -1132,8 +1175,12 @@ impl ServerReply {
                 o.i16(*root_x).i16(*root_y).i16(*win_x).i16(*win_y);
                 o.u16(0).zeros(6);
             }
-            ServerReply::GetInputFocus { sequence, focus } => {
-                o.u8(1).u8(0).u16(*sequence).u32(0);
+            ServerReply::GetInputFocus {
+                sequence,
+                focus,
+                revert_to,
+            } => {
+                o.u8(1).u8(*revert_to).u16(*sequence).u32(0);
                 o.u32(*focus).zeros(20);
             }
             ServerReply::QueryExtension {
@@ -1307,6 +1354,20 @@ pub enum ServerEvent {
         border_width: u16,
         override_redirect: bool,
     },
+    Key {
+        press: bool,
+        sequence: u16,
+        keycode: u8,
+        time: u32,
+        root: u32,
+        event: u32,
+        child: u32,
+        root_x: i16,
+        root_y: i16,
+        event_x: i16,
+        event_y: i16,
+        state: u16,
+    },
 }
 
 impl ServerEvent {
@@ -1360,6 +1421,28 @@ impl ServerEvent {
                 o.u32(*above_sibling);
                 o.i16(*x).i16(*y).u16(*width).u16(*height).u16(*border_width);
                 o.u8(*override_redirect as u8).zeros(5);
+            }
+            ServerEvent::Key {
+                press,
+                sequence,
+                keycode,
+                time,
+                root,
+                event,
+                child,
+                root_x,
+                root_y,
+                event_x,
+                event_y,
+                state,
+            } => {
+                o.u8(if *press { 2 } else { 3 })
+                    .u8(*keycode)
+                    .u16(*sequence)
+                    .u32(*time);
+                o.u32(*root).u32(*event).u32(*child);
+                o.i16(*root_x).i16(*root_y).i16(*event_x).i16(*event_y);
+                o.u16(*state).u8(1).u8(0);
             }
         }
         o.0

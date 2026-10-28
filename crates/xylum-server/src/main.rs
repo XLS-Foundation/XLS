@@ -18,6 +18,8 @@ mod dispatch;
 mod font;
 mod font_data;
 mod gfx;
+mod input;
+mod keymap;
 mod presenter;
 mod state;
 
@@ -25,6 +27,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use xylum_auth::{read_xauthority, validate_cookie, AuthEntry};
@@ -33,7 +36,7 @@ use xylum_protocol::{
 };
 
 use state::{
-    ServerState, DEFAULT_COLORMAP, RESOURCE_ID_MASK, ROOT_VISUAL, ROOT_WINDOW, SCREEN_HEIGHT,
+    ClientConn, ServerState, DEFAULT_COLORMAP, RESOURCE_ID_MASK, ROOT_VISUAL, ROOT_WINDOW, SCREEN_HEIGHT,
     SCREEN_WIDTH,
 };
 
@@ -180,16 +183,26 @@ fn handle_client(stream: &mut UnixStream, shared: &Shared) -> std::io::Result<()
     let result = stream
         .write_all(&success.encode())
         .and_then(|_| stream.flush())
-        .and_then(|_| {
+        .and_then(|_| stream.try_clone())
+        .and_then(|writer| {
+            let conn = Arc::new(ClientConn {
+                writer: Mutex::new(writer),
+                sequence: AtomicU16::new(0),
+            });
+            lock(shared).register_client(resource_id_base, Arc::clone(&conn));
             println!("Xylum: setup success sent (resource base {resource_id_base:#x})");
-            serve_requests(stream, shared)
+            serve_requests(stream, shared, &conn)
         });
 
     lock(shared).drop_client(resource_id_base);
     result
 }
 
-fn serve_requests(stream: &mut UnixStream, shared: &Shared) -> std::io::Result<()> {
+fn serve_requests(
+    stream: &mut UnixStream,
+    shared: &Shared,
+    conn: &ClientConn,
+) -> std::io::Result<()> {
     let mut sequence: u16 = 0;
     loop {
         let raw = match RawRequest::read_from(stream) {
@@ -205,6 +218,7 @@ fn serve_requests(stream: &mut UnixStream, shared: &Shared) -> std::io::Result<(
         };
 
         sequence = sequence.wrapping_add(1);
+        conn.sequence.store(sequence, Ordering::Relaxed);
         println!(
             "Xylum: seq={sequence} {} ({})",
             request_name(raw.opcode),
@@ -216,11 +230,12 @@ fn serve_requests(stream: &mut UnixStream, shared: &Shared) -> std::io::Result<(
             dispatch::process(&mut state, sequence, &raw)
         };
 
-        for packet in &packets {
-            stream.write_all(packet)?;
-        }
         if !packets.is_empty() {
-            stream.flush()?;
+            let mut writer = conn.writer.lock().unwrap_or_else(|e| e.into_inner());
+            for packet in &packets {
+                writer.write_all(packet)?;
+            }
+            writer.flush()?;
         }
     }
 }

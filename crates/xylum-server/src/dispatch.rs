@@ -21,6 +21,7 @@ use xylum_protocol::{
 };
 
 use crate::font;
+use crate::keymap;
 use crate::state::{
     Gc, Property, ServerState, Window, CLASS_INPUT_OUTPUT, DEFAULT_COLORMAP, ROOT_WINDOW,
 };
@@ -633,7 +634,8 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             out.push(
                 ServerReply::GetInputFocus {
                     sequence,
-                    focus: 1,
+                    focus: state.focus,
+                    revert_to: state.focus_revert,
                 }
                 .encode(),
             );
@@ -664,19 +666,18 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
         }
 
         ClientRequest::GetKeyboardMapping {
-            first_keycode: _,
+            first_keycode,
             count,
         } => {
             if count == 0 {
                 out.push(error(ERROR_VALUE, sequence, 0, op));
                 return out;
             }
-            let keysyms_per_keycode = 2u8;
             out.push(
                 ServerReply::GetKeyboardMapping {
                     sequence,
-                    keysyms_per_keycode,
-                    keysyms: vec![0u32; count as usize * keysyms_per_keycode as usize],
+                    keysyms_per_keycode: keymap::KEYSYMS_PER_KEYCODE,
+                    keysyms: state.keymap.keysyms(first_keycode, count),
                 }
                 .encode(),
             );
@@ -686,11 +687,16 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             out.push(
                 ServerReply::GetModifierMapping {
                     sequence,
-                    keycodes_per_modifier: 1,
-                    keycodes: vec![0u8; 8],
+                    keycodes_per_modifier: 2,
+                    keycodes: keymap::modifier_keycodes(),
                 }
                 .encode(),
             );
+        }
+
+        ClientRequest::SetInputFocus { focus, revert_to } => {
+            state.focus = focus;
+            state.focus_revert = revert_to;
         }
 
         ClientRequest::AllocColor {
@@ -959,6 +965,35 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                 draw_text(state, drawable, gc, cursor, y as i32, &text, false);
                 cursor += text.len() as i32 * font::WIDTH;
             }
+        }
+
+        ClientRequest::CopyArea {
+            src,
+            dst,
+            src_x,
+            src_y,
+            dst_x,
+            dst_y,
+            width,
+            height,
+        } => {
+            let Some((src_origin_x, src_origin_y, src_clip)) = state.target(src) else {
+                return out;
+            };
+            let Some((dst_origin_x, dst_origin_y, dst_clip)) = state.target(dst) else {
+                return out;
+            };
+            state.framebuffer.copy_rect(
+                src_origin_x + src_x as i32,
+                src_origin_y + src_y as i32,
+                dst_origin_x + dst_x as i32,
+                dst_origin_y + dst_y as i32,
+                width as i32,
+                height as i32,
+                src_clip,
+                dst_clip,
+            );
+            state.dirty = true;
         }
 
         ClientRequest::Other { opcode } => {

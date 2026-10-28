@@ -88,6 +88,53 @@ impl Framebuffer {
         }
     }
 
+    pub fn copy_rect(
+        &mut self,
+        src_x: i32,
+        src_y: i32,
+        dst_x: i32,
+        dst_y: i32,
+        width: i32,
+        height: i32,
+        src_clip: Clip,
+        dst_clip: Clip,
+    ) {
+        let width = width.min(self.width as i32);
+        let height = height.min(self.height as i32);
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let mut buffer: Vec<Option<u32>> = Vec::with_capacity((width * height) as usize);
+        for row in 0..height {
+            for column in 0..width {
+                let px = src_x + column;
+                let py = src_y + row;
+                let inside = px >= src_clip.0
+                    && py >= src_clip.1
+                    && px < src_clip.2
+                    && py < src_clip.3
+                    && px >= 0
+                    && py >= 0
+                    && (px as usize) < self.width
+                    && (py as usize) < self.height;
+                buffer.push(if inside {
+                    Some(self.pixels[py as usize * self.width + px as usize])
+                } else {
+                    None
+                });
+            }
+        }
+        let mut index = 0;
+        for row in 0..height {
+            for column in 0..width {
+                if let Some(color) = buffer[index] {
+                    self.put(dst_x + column, dst_y + row, dst_clip, color);
+                }
+                index += 1;
+            }
+        }
+    }
+
     pub fn fill_arc(
         &mut self,
         x: i32,

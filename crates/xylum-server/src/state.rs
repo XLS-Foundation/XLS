@@ -15,8 +15,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::AtomicU16;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::gfx::{Clip, Framebuffer};
+use crate::keymap::{self, Keymap};
 
 pub const ROOT_WINDOW: u32 = 1;
 pub const ROOT_VISUAL: u32 = 0x20;
@@ -163,6 +168,11 @@ pub struct Property {
     pub data: Vec<u8>,
 }
 
+pub struct ClientConn {
+    pub writer: Mutex<UnixStream>,
+    pub sequence: AtomicU16,
+}
+
 pub struct Gc {
     pub foreground: u32,
     pub background: u32,
@@ -179,6 +189,12 @@ pub struct ServerState {
     pub framebuffer: Framebuffer,
     pub pointer: (i16, i16),
     pub dirty: bool,
+    pub clients: HashMap<u32, Arc<ClientConn>>,
+    pub modifiers: u16,
+    pub focus: u32,
+    pub focus_revert: u8,
+    pub started: Instant,
+    pub keymap: Keymap,
     client_counter: u32,
 }
 
@@ -216,6 +232,12 @@ impl ServerState {
             ),
             pointer: (100, 100),
             dirty: true,
+            clients: HashMap::new(),
+            modifiers: 0,
+            focus: 1,
+            focus_revert: 0,
+            started: Instant::now(),
+            keymap: Keymap::new(),
             client_counter: 0,
         }
     }
@@ -254,6 +276,69 @@ impl ServerState {
         for window_id in doomed {
             self.windows.remove(&window_id);
             self.properties.retain(|key, _| key.0 != window_id);
+        }
+    }
+
+    pub fn register_client(&mut self, base: u32, conn: Arc<ClientConn>) {
+        self.clients.insert(base, conn);
+    }
+
+    pub fn update_modifiers(&mut self, keycode: u8, pressed: bool) {
+        let mask = keymap::modifier_mask(keycode);
+        if mask != 0 {
+            if pressed {
+                self.modifiers |= mask;
+            } else {
+                self.modifiers &= !mask;
+            }
+        } else if keycode == keymap::CAPS_LOCK_KEYCODE && pressed {
+            self.modifiers ^= keymap::LOCK;
+        }
+    }
+
+    pub fn origin(&self, id: u32) -> (i32, i32) {
+        let mut x = 0i32;
+        let mut y = 0i32;
+        let mut current = id;
+        while let Some(window) = self.windows.get(&current) {
+            if window.parent == 0 {
+                break;
+            }
+            x += window.x as i32;
+            y += window.y as i32;
+            current = window.parent;
+        }
+        (x, y)
+    }
+
+    pub fn window_at(&self, x: i32, y: i32) -> u32 {
+        let mut current = ROOT_WINDOW;
+        let mut origin_x = 0i32;
+        let mut origin_y = 0i32;
+        loop {
+            let mut best: Option<(u32, i32, i32)> = None;
+            for (id, window) in &self.windows {
+                if window.parent != current || !window.mapped {
+                    continue;
+                }
+                let left = origin_x + window.x as i32;
+                let top = origin_y + window.y as i32;
+                let inside = x >= left
+                    && y >= top
+                    && x < left + window.width as i32
+                    && y < top + window.height as i32;
+                if inside && best.map_or(true, |(best_id, _, _)| *id > best_id) {
+                    best = Some((*id, left, top));
+                }
+            }
+            match best {
+                Some((id, left, top)) => {
+                    current = id;
+                    origin_x = left;
+                    origin_y = top;
+                }
+                None => return current,
+            }
         }
     }
 
@@ -323,6 +408,7 @@ impl ServerState {
     }
 
     pub fn drop_client(&mut self, base: u32) {
+        self.clients.remove(&base);
         let owned: Vec<u32> = self
             .windows
             .keys()
