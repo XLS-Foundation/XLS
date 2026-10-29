@@ -101,6 +101,8 @@ Xylum is a massive undertaking and we welcome contributions! Whether it's fixing
 4. Push to the branch (`git push origin feature/AmazingFeature`).
 5. Open a Pull Request.
 
+Please read our [CONTRIBUTING.md](./CONTRIBUTING.md) for detailed guidelines on coding style, commit messages, and development setup.
+
 ## License
 
 Xylum is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License, version 3 or (at your option) any later version** (`GPL-3.0-or-later`).
