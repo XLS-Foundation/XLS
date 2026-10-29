@@ -21,6 +21,8 @@ Unlike traditional X.Org implementations, Xylum is designed to be:
 - **Modular:** A clean, crate-based workspace.
 - **Modern:** Built to eventually leverage Vulkan for zero-copy hardware acceleration.
 
+Official website [here](https://xylum-foundation.vercel.app/).
+
 ## Current Status
 
 Xylum is in **early development**, but the core X11 protocol is already functional. It can successfully run real, unmodified X11 applications.
