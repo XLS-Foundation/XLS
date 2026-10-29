@@ -152,6 +152,14 @@ fn map_window(state: &mut ServerState, sequence: u16, window: u32, out: &mut Vec
     paint_and_expose(state, sequence, window, out);
 }
 
+fn gc_style(state: &ServerState, gc: u32) -> (u32, u16) {
+    state
+        .gcs
+        .get(&gc)
+        .map(|g| (g.foreground, g.line_width))
+        .unwrap_or((0, 0))
+}
+
 fn draw_text(
     state: &mut ServerState,
     drawable: u32,
@@ -993,6 +1001,115 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                 src_clip,
                 dst_clip,
             );
+            state.dirty = true;
+        }
+
+        ClientRequest::PolyPoint {
+            drawable,
+            gc,
+            points,
+        } => {
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                return out;
+            };
+            let (color, _) = gc_style(state, gc);
+            for (x, y) in points {
+                state
+                    .framebuffer
+                    .fill_rect(origin_x + x as i32, origin_y + y as i32, 1, 1, clip, color);
+            }
+            state.dirty = true;
+        }
+
+        ClientRequest::PolyLine {
+            drawable,
+            gc,
+            points,
+        } => {
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                return out;
+            };
+            let (color, width) = gc_style(state, gc);
+            for pair in points.windows(2) {
+                state.framebuffer.draw_line(
+                    origin_x + pair[0].0 as i32,
+                    origin_y + pair[0].1 as i32,
+                    origin_x + pair[1].0 as i32,
+                    origin_y + pair[1].1 as i32,
+                    width,
+                    clip,
+                    color,
+                );
+            }
+            state.dirty = true;
+        }
+
+        ClientRequest::PolySegment {
+            drawable,
+            gc,
+            segments,
+        } => {
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                return out;
+            };
+            let (color, width) = gc_style(state, gc);
+            for (x1, y1, x2, y2) in segments {
+                state.framebuffer.draw_line(
+                    origin_x + x1 as i32,
+                    origin_y + y1 as i32,
+                    origin_x + x2 as i32,
+                    origin_y + y2 as i32,
+                    width,
+                    clip,
+                    color,
+                );
+            }
+            state.dirty = true;
+        }
+
+        ClientRequest::PolyRectangle {
+            drawable,
+            gc,
+            rects,
+        } => {
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                return out;
+            };
+            let (color, width) = gc_style(state, gc);
+            for (x, y, w, h) in rects {
+                let left = origin_x + x as i32;
+                let top = origin_y + y as i32;
+                let right = left + w as i32;
+                let bottom = top + h as i32;
+                let edges = [
+                    (left, top, right, top),
+                    (right, top, right, bottom),
+                    (right, bottom, left, bottom),
+                    (left, bottom, left, top),
+                ];
+                for (x0, y0, x1, y1) in edges {
+                    state
+                        .framebuffer
+                        .draw_line(x0, y0, x1, y1, width, clip, color);
+                }
+            }
+            state.dirty = true;
+        }
+
+        ClientRequest::FillPoly {
+            drawable,
+            gc,
+            points,
+        } => {
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                return out;
+            };
+            let (color, _) = gc_style(state, gc);
+            let absolute: Vec<(i32, i32)> = points
+                .iter()
+                .map(|(x, y)| (origin_x + *x as i32, origin_y + *y as i32))
+                .collect();
+            state.framebuffer.fill_polygon(&absolute, clip, color);
             state.dirty = true;
         }
 

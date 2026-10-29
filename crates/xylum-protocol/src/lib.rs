@@ -512,6 +512,22 @@ fn parse_configure_values(mask: u32, reader: &mut Reader) -> io::Result<Configur
     Ok(values)
 }
 
+fn read_points(reader: &mut Reader, relative: bool) -> io::Result<Vec<(i16, i16)>> {
+    let mut points: Vec<(i16, i16)> = Vec::new();
+    while reader.remaining() >= 4 {
+        let x = reader.i16()?;
+        let y = reader.i16()?;
+        let point = match points.last() {
+            Some(previous) if relative => {
+                (previous.0.wrapping_add(x), previous.1.wrapping_add(y))
+            }
+            _ => (x, y),
+        };
+        points.push(point);
+    }
+    Ok(points)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ArcSpec {
     pub x: i16,
@@ -636,6 +652,31 @@ pub enum ClientRequest {
     },
     MapSubwindows { window: u32 },
     SetInputFocus { focus: u32, revert_to: u8 },
+    PolyPoint {
+        drawable: u32,
+        gc: u32,
+        points: Vec<(i16, i16)>,
+    },
+    PolyLine {
+        drawable: u32,
+        gc: u32,
+        points: Vec<(i16, i16)>,
+    },
+    PolySegment {
+        drawable: u32,
+        gc: u32,
+        segments: Vec<(i16, i16, i16, i16)>,
+    },
+    PolyRectangle {
+        drawable: u32,
+        gc: u32,
+        rects: Vec<(i16, i16, u16, u16)>,
+    },
+    FillPoly {
+        drawable: u32,
+        gc: u32,
+        points: Vec<(i16, i16)>,
+    },
     CopyArea {
         src: u32,
         dst: u32,
@@ -889,6 +930,71 @@ impl ClientRequest {
                 }
             }
             9 => ClientRequest::MapSubwindows { window: r.u32()? },
+            64 | 65 => {
+                let drawable = r.u32()?;
+                let gc = r.u32()?;
+                let points = read_points(&mut r, raw.data == 1)?;
+                if raw.opcode == 64 {
+                    ClientRequest::PolyPoint {
+                        drawable,
+                        gc,
+                        points,
+                    }
+                } else {
+                    ClientRequest::PolyLine {
+                        drawable,
+                        gc,
+                        points,
+                    }
+                }
+            }
+            66 => {
+                let drawable = r.u32()?;
+                let gc = r.u32()?;
+                let mut segments = Vec::new();
+                while r.remaining() >= 8 {
+                    let x1 = r.i16()?;
+                    let y1 = r.i16()?;
+                    let x2 = r.i16()?;
+                    let y2 = r.i16()?;
+                    segments.push((x1, y1, x2, y2));
+                }
+                ClientRequest::PolySegment {
+                    drawable,
+                    gc,
+                    segments,
+                }
+            }
+            67 => {
+                let drawable = r.u32()?;
+                let gc = r.u32()?;
+                let mut rects = Vec::new();
+                while r.remaining() >= 8 {
+                    let x = r.i16()?;
+                    let y = r.i16()?;
+                    let width = r.u16()?;
+                    let height = r.u16()?;
+                    rects.push((x, y, width, height));
+                }
+                ClientRequest::PolyRectangle {
+                    drawable,
+                    gc,
+                    rects,
+                }
+            }
+            69 => {
+                let drawable = r.u32()?;
+                let gc = r.u32()?;
+                r.skip(1)?;
+                let mode = r.u8()?;
+                r.skip(2)?;
+                let points = read_points(&mut r, mode == 1)?;
+                ClientRequest::FillPoly {
+                    drawable,
+                    gc,
+                    points,
+                }
+            }
             62 => {
                 let src = r.u32()?;
                 let dst = r.u32()?;

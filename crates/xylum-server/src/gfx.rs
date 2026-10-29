@@ -88,6 +88,87 @@ impl Framebuffer {
         }
     }
 
+    pub fn draw_line(
+        &mut self,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        width: u16,
+        clip: Clip,
+        color: u32,
+    ) {
+        let thickness = width.max(1) as i32;
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let step_x = if x0 < x1 { 1 } else { -1 };
+        let step_y = if y0 < y1 { 1 } else { -1 };
+        let mut error = dx + dy;
+        let mut x = x0;
+        let mut y = y0;
+        loop {
+            if thickness == 1 {
+                self.put(x, y, clip, color);
+            } else {
+                self.fill_rect(
+                    x - thickness / 2,
+                    y - thickness / 2,
+                    thickness,
+                    thickness,
+                    clip,
+                    color,
+                );
+            }
+            if x == x1 && y == y1 {
+                break;
+            }
+            let doubled = 2 * error;
+            if doubled >= dy {
+                error += dy;
+                x += step_x;
+            }
+            if doubled <= dx {
+                error += dx;
+                y += step_y;
+            }
+        }
+    }
+
+    pub fn fill_polygon(&mut self, points: &[(i32, i32)], clip: Clip, color: u32) {
+        if points.len() < 3 {
+            return;
+        }
+        let min_y = points.iter().map(|p| p.1).min().unwrap_or(0).max(clip.1);
+        let max_y = points
+            .iter()
+            .map(|p| p.1)
+            .max()
+            .unwrap_or(0)
+            .min(clip.3 - 1);
+        for y in min_y..=max_y {
+            let scan = y as f64 + 0.5;
+            let mut crossings: Vec<f64> = Vec::new();
+            for index in 0..points.len() {
+                let (x0, y0) = points[index];
+                let (x1, y1) = points[(index + 1) % points.len()];
+                let fy0 = y0 as f64;
+                let fy1 = y1 as f64;
+                if (fy0 <= scan && fy1 > scan) || (fy1 <= scan && fy0 > scan) {
+                    let t = (scan - fy0) / (fy1 - fy0);
+                    crossings.push(x0 as f64 + t * (x1 - x0) as f64);
+                }
+            }
+            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            for pair in crossings.chunks(2) {
+                if pair.len() == 2 {
+                    let start = (pair[0] - 0.5).ceil() as i32;
+                    let end = (pair[1] - 0.5).ceil() as i32;
+                    self.fill_rect(start, y, end - start, 1, clip, color);
+                }
+            }
+        }
+    }
+
     pub fn copy_rect(
         &mut self,
         src_x: i32,
