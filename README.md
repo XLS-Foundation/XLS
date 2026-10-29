@@ -26,13 +26,13 @@ Unlike traditional X.Org implementations, Xylum is designed to be:
 Xylum is in **early development**, but the core X11 protocol is already functional. It can successfully run real, unmodified X11 applications.
 
 ### What works today:
-- ✅ **Handshake & Auth:** MIT-MAGIC-COOKIE-1 authentication.
-- ✅ **Core Protocol:** Window management (Create, Map, Unmap, Configure), Atoms, Properties.
-- ✅ **Graphics:** GCs (Graphics Contexts), Lines, Rectangles, Arcs, Polygons, Text rendering.
-- ✅ **Fonts:** Built-in 8x16 bitmap font with fallback for legacy font requests.
-- ✅ **Colors:** 256-color palette and named color lookup (`RGB` database).
-- ✅ **Input:** Keyboard routing and mouse tracking.
-- ✅ **Software Rendering:** Direct framebuffer presentation via `softbuffer`.
+- [X] **Handshake & Auth:** MIT-MAGIC-COOKIE-1 authentication.
+- [X] **Core Protocol:** Window management (Create, Map, Unmap, Configure), Atoms, Properties.
+- [X] **Graphics:** GCs (Graphics Contexts), Lines, Rectangles, Arcs, Polygons, Text rendering.
+- [X] **Fonts:** Built-in 8x16 bitmap font with fallback for legacy font requests.
+- [X] **Colors:** 256-color palette and named color lookup (`RGB` database).
+- [X] **Input:** Keyboard routing and mouse tracking.
+- [X] **Software Rendering:** Direct framebuffer presentation via `softbuffer`.
 
 ## Screenshots
 
