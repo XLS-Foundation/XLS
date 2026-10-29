@@ -82,7 +82,7 @@ DISPLAY=:2 xterm
 DISPLAY=:2 xcalc
 ```
 
-## 🗺️ Roadmap
+## Roadmap
 
 We are currently working towards a fully functional, accelerated X11 server. Next up:
 
