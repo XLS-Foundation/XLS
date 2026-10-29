@@ -18,14 +18,16 @@ use std::sync::atomic::Ordering;
 
 use xylum_protocol::{
     has_reply, request_name, ClientRequest, RawRequest, ServerError, ServerEvent, ServerReply,
-    ERROR_ATOM, ERROR_DRAWABLE, ERROR_FONT, ERROR_ID_CHOICE, ERROR_IMPLEMENTATION, ERROR_LENGTH, ERROR_MATCH,
+    ERROR_ALLOC, ERROR_ATOM, ERROR_DRAWABLE, ERROR_FONT, ERROR_ID_CHOICE, ERROR_IMPLEMENTATION, ERROR_LENGTH, ERROR_MATCH,
     ERROR_NAME, ERROR_VALUE, ERROR_WINDOW, EVENT_MASK_EXPOSURE, EVENT_MASK_STRUCTURE_NOTIFY,
 };
 
 use crate::font;
+use crate::gfx::Framebuffer;
 use crate::keymap;
 use crate::state::{
-    Gc, Property, ServerState, Window, CLASS_INPUT_OUTPUT, DEFAULT_COLORMAP, ROOT_WINDOW,
+    Gc, Pixmap, Property, ServerState, Window, CLASS_INPUT_OUTPUT, DEFAULT_COLORMAP, ROOT_VISUAL,
+    ROOT_WINDOW,
 };
 
 fn error(code: u8, sequence: u16, bad_value: u32, major_opcode: u8) -> Vec<u8> {
@@ -128,6 +130,18 @@ fn map_window(state: &mut ServerState, sequence: u16, window: u32, out: &mut Vec
     paint_and_expose(state, sequence, window, out);
 }
 
+fn too_large(width: u16, height: u16) -> bool {
+    width as usize * height as usize > 16 * 1024 * 1024
+}
+
+fn gc_colors(state: &ServerState, gc: u32) -> (u32, u32) {
+    state
+        .gcs
+        .get(&gc)
+        .map(|g| (g.foreground, g.background))
+        .unwrap_or((0, 1))
+}
+
 fn gc_style(state: &ServerState, gc: u32) -> (u32, u16) {
     state
         .gcs
@@ -158,7 +172,7 @@ fn draw_text(
     };
     let top = origin_y + y - font::ASCENT;
     if opaque {
-        state.framebuffer.fill_rect(
+        state.surface(drawable).fill_rect(
             origin_x + x,
             top,
             text.len() as i32 * font::WIDTH,
@@ -169,7 +183,7 @@ fn draw_text(
     }
     for (index, ch) in text.iter().enumerate() {
         if let Some(glyph) = font::glyph(*ch) {
-            state.framebuffer.draw_glyph(
+            state.surface(drawable).draw_glyph(
                 origin_x + x + index as i32 * font::WIDTH,
                 top,
                 glyph,
@@ -395,6 +409,22 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
         }
 
         ClientRequest::GetGeometry { drawable } => {
+            if let Some(pixmap) = state.pixmaps.get(&drawable) {
+                out.push(
+                    ServerReply::GetGeometry {
+                        sequence,
+                        depth: pixmap.depth,
+                        root: ROOT_WINDOW,
+                        x: 0,
+                        y: 0,
+                        width: pixmap.fb.width as u16,
+                        height: pixmap.fb.height as u16,
+                        border_width: 0,
+                    }
+                    .encode(),
+                );
+                return out;
+            }
             let Some(w) = state.windows.get(&drawable) else {
                 out.push(error(ERROR_DRAWABLE, sequence, drawable, op));
                 return out;
@@ -819,7 +849,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             };
             let color = state.gcs.get(&gc).map(|g| g.foreground).unwrap_or(0);
             for (x, y, width, height) in rects {
-                state.framebuffer.fill_rect(
+                state.surface(drawable).fill_rect(
                     origin_x + x as i32,
                     origin_y + y as i32,
                     width as i32,
@@ -841,7 +871,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             };
             let color = state.gcs.get(&gc).map(|g| g.foreground).unwrap_or(0);
             for arc in &arcs {
-                state.framebuffer.fill_arc(
+                state.surface(drawable).fill_arc(
                     origin_x + arc.x as i32,
                     origin_y + arc.y as i32,
                     arc.width as i32,
@@ -869,7 +899,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                 .map(|g| (g.foreground, g.line_width))
                 .unwrap_or((0, 0));
             for arc in &arcs {
-                state.framebuffer.stroke_arc(
+                state.surface(drawable).stroke_arc(
                     origin_x + arc.x as i32,
                     origin_y + arc.y as i32,
                     arc.width as i32,
@@ -886,12 +916,8 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
 
         ClientRequest::OpenFont { fid, name } => {
             let name = String::from_utf8_lossy(&name).into_owned();
-            match font::lookup(&name) {
-                Some(bold) => {
-                    state.fonts.insert(fid, bold);
-                }
-                None => out.push(error(ERROR_NAME, sequence, 0, op)),
-            }
+            let bold = font::lookup(&name).unwrap_or(false);
+            state.fonts.insert(fid, bold);
         }
 
         ClientRequest::CloseFont { fid } => {
@@ -997,23 +1023,218 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             width,
             height,
         } => {
+            if too_large(width, height) {
+                return out;
+            }
             let Some((src_origin_x, src_origin_y, src_clip)) = state.target(src) else {
                 return out;
             };
             let Some((dst_origin_x, dst_origin_y, dst_clip)) = state.target(dst) else {
                 return out;
             };
-            state.framebuffer.copy_rect(
+            let data = state.surface_ref(src).read_rect(
                 src_origin_x + src_x as i32,
                 src_origin_y + src_y as i32,
+                width as i32,
+                height as i32,
+                src_clip,
+            );
+            state.surface(dst).write_rect(
                 dst_origin_x + dst_x as i32,
                 dst_origin_y + dst_y as i32,
                 width as i32,
                 height as i32,
-                src_clip,
                 dst_clip,
+                &data,
             );
             state.dirty = true;
+        }
+
+        ClientRequest::CopyPlane {
+            src,
+            dst,
+            gc,
+            src_x,
+            src_y,
+            dst_x,
+            dst_y,
+            width,
+            height,
+            plane,
+        } => {
+            if too_large(width, height) {
+                return out;
+            }
+            let Some((src_origin_x, src_origin_y, src_clip)) = state.target(src) else {
+                return out;
+            };
+            let Some((dst_origin_x, dst_origin_y, dst_clip)) = state.target(dst) else {
+                return out;
+            };
+            let (foreground, background) = gc_colors(state, gc);
+            let data: Vec<Option<u32>> = state
+                .surface_ref(src)
+                .read_rect(
+                    src_origin_x + src_x as i32,
+                    src_origin_y + src_y as i32,
+                    width as i32,
+                    height as i32,
+                    src_clip,
+                )
+                .into_iter()
+                .map(|pixel| {
+                    pixel.map(|value| {
+                        if value & plane != 0 {
+                            foreground
+                        } else {
+                            background
+                        }
+                    })
+                })
+                .collect();
+            state.surface(dst).write_rect(
+                dst_origin_x + dst_x as i32,
+                dst_origin_y + dst_y as i32,
+                width as i32,
+                height as i32,
+                dst_clip,
+                &data,
+            );
+            state.dirty = true;
+        }
+
+        ClientRequest::CreatePixmap {
+            depth,
+            pid,
+            drawable: _,
+            width,
+            height,
+        } => {
+            if state.pixmaps.contains_key(&pid) || state.windows.contains_key(&pid) {
+                out.push(error(ERROR_ID_CHOICE, sequence, pid, op));
+            } else if width == 0 || height == 0 {
+                out.push(error(ERROR_VALUE, sequence, 0, op));
+            } else if too_large(width, height) {
+                out.push(error(ERROR_ALLOC, sequence, 0, op));
+            } else {
+                state.pixmaps.insert(
+                    pid,
+                    Pixmap {
+                        depth,
+                        fb: Framebuffer::new(width as usize, height as usize, 0),
+                    },
+                );
+            }
+        }
+
+        ClientRequest::FreePixmap { pid } => {
+            state.pixmaps.remove(&pid);
+        }
+
+        ClientRequest::PutImage {
+            format,
+            drawable,
+            gc,
+            width,
+            height,
+            dst_x,
+            dst_y,
+            left_pad,
+            depth,
+            data,
+        } => {
+            if too_large(width, height) {
+                return out;
+            }
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                return out;
+            };
+            let (foreground, background) = gc_colors(state, gc);
+            let columns = width as usize;
+            let rows = height as usize;
+            let mut pixels: Vec<Option<u32>> = Vec::with_capacity(columns * rows);
+            if format == 2 && depth != 1 {
+                let stride = columns * 4;
+                for row in 0..rows {
+                    for column in 0..columns {
+                        let offset = row * stride + column * 4;
+                        pixels.push(data.get(offset..offset + 4).map(|bytes| {
+                            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                                & 0x00ff_ffff
+                        }));
+                    }
+                }
+            } else if format == 0 || (format == 2 && depth == 1) {
+                let stride = ((columns + left_pad as usize + 31) / 32) * 4;
+                for row in 0..rows {
+                    for column in 0..columns {
+                        let bit_index = column + left_pad as usize;
+                        let byte = data.get(row * stride + bit_index / 8).copied();
+                        pixels.push(byte.map(|value| {
+                            if (value >> (bit_index % 8)) & 1 != 0 {
+                                foreground
+                            } else {
+                                background
+                            }
+                        }));
+                    }
+                }
+            } else {
+                return out;
+            }
+            state.surface(drawable).write_rect(
+                origin_x + dst_x as i32,
+                origin_y + dst_y as i32,
+                width as i32,
+                height as i32,
+                clip,
+                &pixels,
+            );
+            state.dirty = true;
+        }
+
+        ClientRequest::GetImage {
+            format,
+            drawable,
+            x,
+            y,
+            width,
+            height,
+        } => {
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                out.push(error(ERROR_DRAWABLE, sequence, drawable, op));
+                return out;
+            };
+            let depth = state.pixmaps.get(&drawable).map(|p| p.depth).unwrap_or(24);
+            if format != 2 || depth == 1 || too_large(width, height) {
+                out.push(error(ERROR_MATCH, sequence, 0, op));
+                return out;
+            }
+            let region = state.surface_ref(drawable).read_rect(
+                origin_x + x as i32,
+                origin_y + y as i32,
+                width as i32,
+                height as i32,
+                clip,
+            );
+            let mut bytes = Vec::with_capacity(region.len() * 4);
+            for pixel in region {
+                bytes.extend_from_slice(&pixel.unwrap_or(0).to_le_bytes());
+            }
+            let visual = if state.pixmaps.contains_key(&drawable) {
+                0
+            } else {
+                ROOT_VISUAL
+            };
+            out.push(
+                ServerReply::GetImage {
+                    sequence,
+                    depth,
+                    visual,
+                    data: bytes,
+                }
+                .encode(),
+            );
         }
 
         ClientRequest::PolyPoint {
@@ -1026,9 +1247,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             };
             let (color, _) = gc_style(state, gc);
             for (x, y) in points {
-                state
-                    .framebuffer
-                    .fill_rect(origin_x + x as i32, origin_y + y as i32, 1, 1, clip, color);
+                state.surface(drawable).fill_rect(origin_x + x as i32, origin_y + y as i32, 1, 1, clip, color);
             }
             state.dirty = true;
         }
@@ -1043,7 +1262,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             };
             let (color, width) = gc_style(state, gc);
             for pair in points.windows(2) {
-                state.framebuffer.draw_line(
+                state.surface(drawable).draw_line(
                     origin_x + pair[0].0 as i32,
                     origin_y + pair[0].1 as i32,
                     origin_x + pair[1].0 as i32,
@@ -1066,7 +1285,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             };
             let (color, width) = gc_style(state, gc);
             for (x1, y1, x2, y2) in segments {
-                state.framebuffer.draw_line(
+                state.surface(drawable).draw_line(
                     origin_x + x1 as i32,
                     origin_y + y1 as i32,
                     origin_x + x2 as i32,
@@ -1100,9 +1319,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                     (left, bottom, left, top),
                 ];
                 for (x0, y0, x1, y1) in edges {
-                    state
-                        .framebuffer
-                        .draw_line(x0, y0, x1, y1, width, clip, color);
+                    state.surface(drawable).draw_line(x0, y0, x1, y1, width, clip, color);
                 }
             }
             state.dirty = true;
@@ -1121,7 +1338,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                 .iter()
                 .map(|(x, y)| (origin_x + *x as i32, origin_y + *y as i32))
                 .collect();
-            state.framebuffer.fill_polygon(&absolute, clip, color);
+            state.surface(drawable).fill_polygon(&absolute, clip, color);
             state.dirty = true;
         }
 

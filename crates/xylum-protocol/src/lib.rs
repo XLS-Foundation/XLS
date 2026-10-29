@@ -30,6 +30,7 @@ pub const ERROR_ATOM: u8 = 5;
 pub const ERROR_FONT: u8 = 7;
 pub const ERROR_MATCH: u8 = 8;
 pub const ERROR_DRAWABLE: u8 = 9;
+pub const ERROR_ALLOC: u8 = 11;
 pub const ERROR_ID_CHOICE: u8 = 14;
 pub const ERROR_NAME: u8 = 15;
 pub const ERROR_LENGTH: u8 = 16;
@@ -652,6 +653,46 @@ pub enum ClientRequest {
     },
     MapSubwindows { window: u32 },
     SetInputFocus { focus: u32, revert_to: u8 },
+    CreatePixmap {
+        depth: u8,
+        pid: u32,
+        drawable: u32,
+        width: u16,
+        height: u16,
+    },
+    FreePixmap { pid: u32 },
+    PutImage {
+        format: u8,
+        drawable: u32,
+        gc: u32,
+        width: u16,
+        height: u16,
+        dst_x: i16,
+        dst_y: i16,
+        left_pad: u8,
+        depth: u8,
+        data: Vec<u8>,
+    },
+    GetImage {
+        format: u8,
+        drawable: u32,
+        x: i16,
+        y: i16,
+        width: u16,
+        height: u16,
+    },
+    CopyPlane {
+        src: u32,
+        dst: u32,
+        gc: u32,
+        src_x: i16,
+        src_y: i16,
+        dst_x: i16,
+        dst_y: i16,
+        width: u16,
+        height: u16,
+        plane: u32,
+    },
     ListFontsWithInfo { max_names: u16, pattern: Vec<u8> },
     GrabPointer,
     GrabKeyboard,
@@ -1036,6 +1077,84 @@ impl ClientRequest {
             }
             26 => ClientRequest::GrabPointer,
             31 => ClientRequest::GrabKeyboard,
+            53 => {
+                let pid = r.u32()?;
+                let drawable = r.u32()?;
+                let width = r.u16()?;
+                let height = r.u16()?;
+                ClientRequest::CreatePixmap {
+                    depth: raw.data,
+                    pid,
+                    drawable,
+                    width,
+                    height,
+                }
+            }
+            54 => ClientRequest::FreePixmap { pid: r.u32()? },
+            72 => {
+                let drawable = r.u32()?;
+                let gc = r.u32()?;
+                let width = r.u16()?;
+                let height = r.u16()?;
+                let dst_x = r.i16()?;
+                let dst_y = r.i16()?;
+                let left_pad = r.u8()?;
+                let depth = r.u8()?;
+                r.skip(2)?;
+                let rest = r.remaining();
+                let data = r.take(rest)?.to_vec();
+                ClientRequest::PutImage {
+                    format: raw.data,
+                    drawable,
+                    gc,
+                    width,
+                    height,
+                    dst_x,
+                    dst_y,
+                    left_pad,
+                    depth,
+                    data,
+                }
+            }
+            73 => {
+                let drawable = r.u32()?;
+                let x = r.i16()?;
+                let y = r.i16()?;
+                let width = r.u16()?;
+                let height = r.u16()?;
+                ClientRequest::GetImage {
+                    format: raw.data,
+                    drawable,
+                    x,
+                    y,
+                    width,
+                    height,
+                }
+            }
+            63 => {
+                let src = r.u32()?;
+                let dst = r.u32()?;
+                let gc = r.u32()?;
+                let src_x = r.i16()?;
+                let src_y = r.i16()?;
+                let dst_x = r.i16()?;
+                let dst_y = r.i16()?;
+                let width = r.u16()?;
+                let height = r.u16()?;
+                let plane = r.u32()?;
+                ClientRequest::CopyPlane {
+                    src,
+                    dst,
+                    gc,
+                    src_x,
+                    src_y,
+                    dst_x,
+                    dst_y,
+                    width,
+                    height,
+                    plane,
+                }
+            }
             62 => {
                 let src = r.u32()?;
                 let dst = r.u32()?;
@@ -1176,6 +1295,12 @@ pub enum ServerReply {
         mask: u16,
     },
     GrabStatus { sequence: u16, status: u8 },
+    GetImage {
+        sequence: u16,
+        depth: u8,
+        visual: u32,
+        data: Vec<u8>,
+    },
     GetSelectionOwner { sequence: u16, owner: u32 },
     GetInputFocus {
         sequence: u16,
@@ -1341,6 +1466,18 @@ impl ServerReply {
                 o.u32(*root).u32(0);
                 o.i16(*root_x).i16(*root_y).i16(*win_x).i16(*win_y);
                 o.u16(*mask).zeros(6);
+            }
+            ServerReply::GetImage {
+                sequence,
+                depth,
+                visual,
+                data,
+            } => {
+                o.u8(1)
+                    .u8(*depth)
+                    .u16(*sequence)
+                    .u32((data.len() / 4) as u32);
+                o.u32(*visual).zeros(20).bytes(data);
             }
             ServerReply::GrabStatus { sequence, status } => {
                 o.u8(1).u8(*status).u16(*sequence).u32(0);

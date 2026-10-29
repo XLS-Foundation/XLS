@@ -169,47 +169,55 @@ impl Framebuffer {
         }
     }
 
-    pub fn copy_rect(
-        &mut self,
-        src_x: i32,
-        src_y: i32,
-        dst_x: i32,
-        dst_y: i32,
+    pub fn read_rect(
+        &self,
+        x: i32,
+        y: i32,
         width: i32,
         height: i32,
-        src_clip: Clip,
-        dst_clip: Clip,
-    ) {
-        let width = width.min(self.width as i32);
-        let height = height.min(self.height as i32);
+        clip: Clip,
+    ) -> Vec<Option<u32>> {
+        let mut data = Vec::new();
         if width <= 0 || height <= 0 {
-            return;
+            return data;
         }
-        let mut buffer: Vec<Option<u32>> = Vec::with_capacity((width * height) as usize);
+        data.reserve(width as usize * height as usize);
         for row in 0..height {
             for column in 0..width {
-                let px = src_x + column;
-                let py = src_y + row;
-                let inside = px >= src_clip.0
-                    && py >= src_clip.1
-                    && px < src_clip.2
-                    && py < src_clip.3
+                let px = x + column;
+                let py = y + row;
+                let inside = px >= clip.0
+                    && py >= clip.1
+                    && px < clip.2
+                    && py < clip.3
                     && px >= 0
                     && py >= 0
                     && (px as usize) < self.width
                     && (py as usize) < self.height;
-                buffer.push(if inside {
+                data.push(if inside {
                     Some(self.pixels[py as usize * self.width + px as usize])
                 } else {
                     None
                 });
             }
         }
-        let mut index = 0;
-        for row in 0..height {
-            for column in 0..width {
-                if let Some(color) = buffer[index] {
-                    self.put(dst_x + column, dst_y + row, dst_clip, color);
+        data
+    }
+
+    pub fn write_rect(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        clip: Clip,
+        data: &[Option<u32>],
+    ) {
+        let mut index = 0usize;
+        for row in 0..height.max(0) {
+            for column in 0..width.max(0) {
+                if let Some(Some(color)) = data.get(index) {
+                    self.put(x + column, y + row, clip, *color);
                 }
                 index += 1;
             }

@@ -173,6 +173,11 @@ pub struct ClientConn {
     pub sequence: AtomicU16,
 }
 
+pub struct Pixmap {
+    pub depth: u8,
+    pub fb: Framebuffer,
+}
+
 pub type Delivery = (Arc<ClientConn>, Vec<u8>);
 
 pub struct Gc {
@@ -188,6 +193,7 @@ pub struct ServerState {
     pub properties: HashMap<(u32, u32), Property>,
     pub gcs: HashMap<u32, Gc>,
     pub fonts: HashMap<u32, bool>,
+    pub pixmaps: HashMap<u32, Pixmap>,
     pub framebuffer: Framebuffer,
     pub pointer: (i16, i16),
     pub dirty: bool,
@@ -232,6 +238,7 @@ impl ServerState {
             properties: HashMap::new(),
             gcs: HashMap::new(),
             fonts: HashMap::new(),
+            pixmaps: HashMap::new(),
             framebuffer: Framebuffer::new(
                 SCREEN_WIDTH as usize,
                 SCREEN_HEIGHT as usize,
@@ -299,6 +306,20 @@ impl ServerState {
         self.started.elapsed().as_millis() as u32
     }
 
+    pub fn surface(&mut self, id: u32) -> &mut Framebuffer {
+        match self.pixmaps.get_mut(&id) {
+            Some(pixmap) => &mut pixmap.fb,
+            None => &mut self.framebuffer,
+        }
+    }
+
+    pub fn surface_ref(&self, id: u32) -> &Framebuffer {
+        match self.pixmaps.get(&id) {
+            Some(pixmap) => &pixmap.fb,
+            None => &self.framebuffer,
+        }
+    }
+
     pub fn register_client(&mut self, base: u32, conn: Arc<ClientConn>) {
         self.clients.insert(base, conn);
     }
@@ -363,6 +384,13 @@ impl ServerState {
     }
 
     pub fn target(&self, id: u32) -> Option<(i32, i32, Clip)> {
+        if let Some(pixmap) = self.pixmaps.get(&id) {
+            return Some((
+                0,
+                0,
+                (0, 0, pixmap.fb.width as i32, pixmap.fb.height as i32),
+            ));
+        }
         if !self.is_viewable(id) {
             return None;
         }
@@ -453,6 +481,7 @@ impl ServerState {
             .retain(|id, _| *id & !RESOURCE_ID_MASK != base);
         self.gcs.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
         self.fonts.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
+        self.pixmaps.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
         let windows = &self.windows;
         self.properties
             .retain(|key, _| windows.contains_key(&key.0));

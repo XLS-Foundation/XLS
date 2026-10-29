@@ -39,6 +39,13 @@ const FONTS: &[(&str, bool)] = &[
     ("-misc-fixed-medium-r-normal--16-120-100-100-c-80-iso8859-1", false),
     ("-misc-fixed-bold-r-normal--16-120-100-100-c-80-iso10646-1", true),
     ("-misc-fixed-bold-r-normal--16-120-100-100-c-80-iso8859-1", true),
+    ("8x13", false),
+    ("9x15", false),
+    ("10x20", false),
+    ("12x24", false),
+    ("-misc-fixed-medium-r-normal--13-120-75-75-c-80-iso8859-1", false),
+    ("-misc-fixed-medium-r-normal--13-120-75-75-c-80-iso10646-1", false),
+    ("-adobe-helvetica-medium-r-normal--12-120-75-75-p-67-iso8859-1", false),
 ];
 
 pub fn glyph(ch: u8) -> Option<&'static [u8; 16]> {
