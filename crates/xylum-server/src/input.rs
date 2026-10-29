@@ -21,9 +21,52 @@ use std::sync::Arc;
 use xylum_protocol::ServerEvent;
 
 use crate::keymap;
-use crate::state::{ClientConn, ServerState, RESOURCE_ID_MASK, ROOT_WINDOW};
+use crate::state::{ClientConn, Delivery, ServerState, ROOT_WINDOW};
 
-pub type Delivery = (Arc<ClientConn>, Vec<u8>);
+struct Context {
+    conn: Arc<ClientConn>,
+    sequence: u16,
+    time: u32,
+    root_x: i16,
+    root_y: i16,
+    event_x: i16,
+    event_y: i16,
+}
+
+fn context(state: &ServerState, window: u32) -> Option<Context> {
+    let conn = state.conn_for_window(window)?;
+    let (origin_x, origin_y) = state.origin(window);
+    let (pointer_x, pointer_y) = state.pointer;
+    Some(Context {
+        sequence: conn.sequence.load(Ordering::Relaxed),
+        conn,
+        time: state.now(),
+        root_x: pointer_x,
+        root_y: pointer_y,
+        event_x: (pointer_x as i32 - origin_x) as i16,
+        event_y: (pointer_y as i32 - origin_y) as i16,
+    })
+}
+
+fn find_receiver(
+    state: &ServerState,
+    start: u32,
+    wanted: impl Fn(u32) -> bool,
+) -> Option<(u32, u32)> {
+    let mut current = start;
+    let mut child = 0u32;
+    loop {
+        let window = state.windows.get(&current)?;
+        if wanted(window.event_mask) {
+            return Some((current, child));
+        }
+        if window.parent == 0 {
+            return None;
+        }
+        child = current;
+        current = window.parent;
+    }
+}
 
 pub fn key_event(
     state: &mut ServerState,
@@ -37,7 +80,7 @@ pub fn key_event(
         return Vec::new();
     }
 
-    let modifiers_before = state.modifiers;
+    let before = state.modifiers | state.buttons;
     state.update_modifiers(keycode, pressed);
 
     let (pointer_x, pointer_y) = state.pointer;
@@ -48,44 +91,164 @@ pub fn key_event(
     };
 
     let mask_bit = if pressed { 1u32 } else { 2u32 };
-    let mut current = start;
-    let mut child = 0u32;
-    loop {
-        let Some(window) = state.windows.get(&current) else {
-            return Vec::new();
-        };
-        if window.event_mask & mask_bit != 0 {
-            break;
-        }
-        if window.parent == 0 {
-            return Vec::new();
-        }
-        child = current;
-        current = window.parent;
-    }
-
-    let Some(conn) = state.clients.get(&(current & !RESOURCE_ID_MASK)).cloned() else {
+    let Some((window, child)) = find_receiver(state, start, |mask| mask & mask_bit != 0) else {
         return Vec::new();
     };
-    let (origin_x, origin_y) = state.origin(current);
+    let Some(ctx) = context(state, window) else {
+        return Vec::new();
+    };
 
     let event = ServerEvent::Key {
         press: pressed,
-        sequence: conn.sequence.load(Ordering::Relaxed),
+        sequence: ctx.sequence,
         keycode,
-        time: state.started.elapsed().as_millis() as u32,
+        time: ctx.time,
         root: ROOT_WINDOW,
-        event: current,
+        event: window,
         child,
-        root_x: pointer_x,
-        root_y: pointer_y,
-        event_x: (pointer_x as i32 - origin_x) as i16,
-        event_y: (pointer_y as i32 - origin_y) as i16,
-        state: modifiers_before,
+        root_x: ctx.root_x,
+        root_y: ctx.root_y,
+        event_x: ctx.event_x,
+        event_y: ctx.event_y,
+        state: before,
     }
     .encode();
 
-    vec![(conn, event)]
+    vec![(ctx.conn, event)]
+}
+
+fn motion_wanted(mask: u32, buttons: u16) -> bool {
+    if mask & (1u32 << 6) != 0 {
+        return true;
+    }
+    if buttons & 0x1f00 != 0 && mask & (1u32 << 13) != 0 {
+        return true;
+    }
+    for index in 0..5u32 {
+        if buttons & (0x100u16 << index) != 0 && mask & (1u32 << (8 + index)) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn crossing(state: &ServerState, window: u32, enter: bool, deliveries: &mut Vec<Delivery>) {
+    let Some(target) = state.windows.get(&window) else {
+        return;
+    };
+    let mask_bit = if enter { 1u32 << 4 } else { 1u32 << 5 };
+    if target.event_mask & mask_bit == 0 {
+        return;
+    }
+    let Some(ctx) = context(state, window) else {
+        return;
+    };
+    let event = ServerEvent::Crossing {
+        enter,
+        detail: 3,
+        sequence: ctx.sequence,
+        time: ctx.time,
+        root: ROOT_WINDOW,
+        event: window,
+        child: 0,
+        root_x: ctx.root_x,
+        root_y: ctx.root_y,
+        event_x: ctx.event_x,
+        event_y: ctx.event_y,
+        state: state.modifiers | state.buttons,
+        mode: 0,
+        focus: state.focus <= 1 || state.focus == window,
+    }
+    .encode();
+    deliveries.push((ctx.conn, event));
+}
+
+pub fn motion_event(state: &mut ServerState) -> Vec<Delivery> {
+    let (pointer_x, pointer_y) = state.pointer;
+    let deepest = state.window_at(pointer_x as i32, pointer_y as i32);
+    let mut deliveries = Vec::new();
+
+    if state.implicit_grab.is_none() && deepest != state.last_pointer_window {
+        let previous = state.last_pointer_window;
+        state.last_pointer_window = deepest;
+        crossing(state, previous, false, &mut deliveries);
+        crossing(state, deepest, true, &mut deliveries);
+    }
+
+    let start = state.implicit_grab.unwrap_or(deepest);
+    let buttons = state.buttons;
+    if let Some((window, child)) =
+        find_receiver(state, start, |mask| motion_wanted(mask, buttons))
+    {
+        if let Some(ctx) = context(state, window) {
+            let event = ServerEvent::Pointer {
+                kind: 6,
+                detail: 0,
+                sequence: ctx.sequence,
+                time: ctx.time,
+                root: ROOT_WINDOW,
+                event: window,
+                child,
+                root_x: ctx.root_x,
+                root_y: ctx.root_y,
+                event_x: ctx.event_x,
+                event_y: ctx.event_y,
+                state: state.modifiers | state.buttons,
+            }
+            .encode();
+            deliveries.push((ctx.conn, event));
+        }
+    }
+
+    deliveries
+}
+
+pub fn button_event(state: &mut ServerState, button: u8, pressed: bool) -> Vec<Delivery> {
+    if !(1..=5).contains(&button) {
+        return Vec::new();
+    }
+    let (pointer_x, pointer_y) = state.pointer;
+    let deepest = state.window_at(pointer_x as i32, pointer_y as i32);
+    let before = state.modifiers | state.buttons;
+    let mask_bit = if pressed { 1u32 << 2 } else { 1u32 << 3 };
+    let start = state.implicit_grab.unwrap_or(deepest);
+    let receiver = find_receiver(state, start, |mask| mask & mask_bit != 0);
+
+    let button_mask = 0x100u16 << (button - 1);
+    if pressed {
+        state.buttons |= button_mask;
+        if state.implicit_grab.is_none() {
+            state.implicit_grab = receiver.map(|(window, _)| window);
+        }
+    } else {
+        state.buttons &= !button_mask;
+        if state.buttons & 0x1f00 == 0 {
+            state.implicit_grab = None;
+        }
+    }
+
+    let Some((window, child)) = receiver else {
+        return Vec::new();
+    };
+    let Some(ctx) = context(state, window) else {
+        return Vec::new();
+    };
+    let event = ServerEvent::Pointer {
+        kind: if pressed { 4 } else { 5 },
+        detail: button,
+        sequence: ctx.sequence,
+        time: ctx.time,
+        root: ROOT_WINDOW,
+        event: window,
+        child,
+        root_x: ctx.root_x,
+        root_y: ctx.root_y,
+        event_x: ctx.event_x,
+        event_y: ctx.event_y,
+        state: before,
+    }
+    .encode();
+    vec![(ctx.conn, event)]
 }
 
 pub fn send(deliveries: Vec<Delivery>) {

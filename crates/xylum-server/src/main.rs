@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+mod colors;
 mod dispatch;
 mod font;
 mod font_data;
@@ -97,6 +98,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Xylum: running headless (XYLUM_HEADLESS is set)");
         let _ = accept_thread.join();
     } else {
+        if let Ok(display) = std::env::var("DISPLAY") {
+            let own = format!(":{DISPLAY_NUMBER}");
+            if display == own || display.starts_with(&format!("{own}.")) {
+                eprintln!(
+                    "Xylum: DISPLAY is {display}, which is Xylum itself; set DISPLAY to your desktop display (for example DISPLAY=:0) and run again"
+                );
+                std::process::exit(1);
+            }
+        }
         presenter::run(state);
     }
 
@@ -225,9 +235,11 @@ fn serve_requests(
             raw.opcode
         );
 
-        let packets = {
+        let (packets, pending) = {
             let mut state = lock(shared);
-            dispatch::process(&mut state, sequence, &raw)
+            let packets = dispatch::process(&mut state, sequence, &raw);
+            let pending = std::mem::take(&mut state.pending);
+            (packets, pending)
         };
 
         if !packets.is_empty() {
@@ -237,5 +249,6 @@ fn serve_requests(
             }
             writer.flush()?;
         }
+        input::send(pending);
     }
 }

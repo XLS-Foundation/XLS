@@ -173,6 +173,8 @@ pub struct ClientConn {
     pub sequence: AtomicU16,
 }
 
+pub type Delivery = (Arc<ClientConn>, Vec<u8>);
+
 pub struct Gc {
     pub foreground: u32,
     pub background: u32,
@@ -195,6 +197,11 @@ pub struct ServerState {
     pub focus_revert: u8,
     pub started: Instant,
     pub keymap: Keymap,
+    pub buttons: u16,
+    pub last_pointer_window: u32,
+    pub implicit_grab: Option<u32>,
+    pub selections: HashMap<u32, u32>,
+    pub pending: Vec<Delivery>,
     client_counter: u32,
 }
 
@@ -238,6 +245,11 @@ impl ServerState {
             focus_revert: 0,
             started: Instant::now(),
             keymap: Keymap::new(),
+            buttons: 0,
+            last_pointer_window: ROOT_WINDOW,
+            implicit_grab: None,
+            selections: HashMap::new(),
+            pending: Vec::new(),
             client_counter: 0,
         }
     }
@@ -277,6 +289,14 @@ impl ServerState {
             self.windows.remove(&window_id);
             self.properties.retain(|key, _| key.0 != window_id);
         }
+    }
+
+    pub fn conn_for_window(&self, window: u32) -> Option<Arc<ClientConn>> {
+        self.clients.get(&(window & !RESOURCE_ID_MASK)).cloned()
+    }
+
+    pub fn now(&self) -> u32 {
+        self.started.elapsed().as_millis() as u32
     }
 
     pub fn register_client(&mut self, base: u32, conn: Arc<ClientConn>) {
@@ -409,6 +429,17 @@ impl ServerState {
 
     pub fn drop_client(&mut self, base: u32) {
         self.clients.remove(&base);
+        self.selections
+            .retain(|_, window| *window & !RESOURCE_ID_MASK != base);
+        if self
+            .implicit_grab
+            .is_some_and(|window| window & !RESOURCE_ID_MASK == base)
+        {
+            self.implicit_grab = None;
+        }
+        if self.last_pointer_window & !RESOURCE_ID_MASK == base {
+            self.last_pointer_window = ROOT_WINDOW;
+        }
         let owned: Vec<u32> = self
             .windows
             .keys()

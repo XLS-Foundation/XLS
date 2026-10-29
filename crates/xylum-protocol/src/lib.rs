@@ -652,6 +652,18 @@ pub enum ClientRequest {
     },
     MapSubwindows { window: u32 },
     SetInputFocus { focus: u32, revert_to: u8 },
+    ListFontsWithInfo { max_names: u16, pattern: Vec<u8> },
+    GrabPointer,
+    GrabKeyboard,
+    SetSelectionOwner { owner: u32, selection: u32 },
+    GetSelectionOwner { selection: u32 },
+    ConvertSelection {
+        requestor: u32,
+        selection: u32,
+        target: u32,
+        property: u32,
+    },
+    SendEvent { destination: u32, event: [u8; 32] },
     PolyPoint {
         drawable: u32,
         gc: u32,
@@ -995,6 +1007,35 @@ impl ClientRequest {
                     points,
                 }
             }
+            22 => {
+                let owner = r.u32()?;
+                let selection = r.u32()?;
+                ClientRequest::SetSelectionOwner { owner, selection }
+            }
+            23 => ClientRequest::GetSelectionOwner {
+                selection: r.u32()?,
+            },
+            24 => {
+                let requestor = r.u32()?;
+                let selection = r.u32()?;
+                let target = r.u32()?;
+                let property = r.u32()?;
+                ClientRequest::ConvertSelection {
+                    requestor,
+                    selection,
+                    target,
+                    property,
+                }
+            }
+            25 => {
+                let destination = r.u32()?;
+                r.skip(4)?;
+                let mut event = [0u8; 32];
+                event.copy_from_slice(r.take(32)?);
+                ClientRequest::SendEvent { destination, event }
+            }
+            26 => ClientRequest::GrabPointer,
+            31 => ClientRequest::GrabKeyboard,
             62 => {
                 let src = r.u32()?;
                 let dst = r.u32()?;
@@ -1037,6 +1078,12 @@ impl ClientRequest {
                 let pattern_len = r.u16()? as usize;
                 let pattern = r.take(pattern_len)?.to_vec();
                 ClientRequest::ListFonts { max_names, pattern }
+            }
+            50 => {
+                let max_names = r.u16()?;
+                let pattern_len = r.u16()? as usize;
+                let pattern = r.take(pattern_len)?.to_vec();
+                ClientRequest::ListFontsWithInfo { max_names, pattern }
             }
             76 => {
                 let drawable = r.u32()?;
@@ -1126,7 +1173,10 @@ pub enum ServerReply {
         root_y: i16,
         win_x: i16,
         win_y: i16,
+        mask: u16,
     },
+    GrabStatus { sequence: u16, status: u8 },
+    GetSelectionOwner { sequence: u16, owner: u32 },
     GetInputFocus {
         sequence: u16,
         focus: u32,
@@ -1184,6 +1234,16 @@ pub enum ServerReply {
     ListFonts {
         sequence: u16,
         names: Vec<Vec<u8>>,
+    },
+    ListFontsWithInfo {
+        sequence: u16,
+        name: Vec<u8>,
+        ascent: i16,
+        descent: i16,
+        width: i16,
+        first_char: u16,
+        last_char: u16,
+        default_char: u16,
     },
 }
 
@@ -1275,11 +1335,20 @@ impl ServerReply {
                 root_y,
                 win_x,
                 win_y,
+                mask,
             } => {
                 o.u8(1).u8(1).u16(*sequence).u32(0);
                 o.u32(*root).u32(0);
                 o.i16(*root_x).i16(*root_y).i16(*win_x).i16(*win_y);
-                o.u16(0).zeros(6);
+                o.u16(*mask).zeros(6);
+            }
+            ServerReply::GrabStatus { sequence, status } => {
+                o.u8(1).u8(*status).u16(*sequence).u32(0);
+                o.zeros(24);
+            }
+            ServerReply::GetSelectionOwner { sequence, owner } => {
+                o.u8(1).u8(0).u16(*sequence).u32(0);
+                o.u32(*owner).zeros(20);
             }
             ServerReply::GetInputFocus {
                 sequence,
@@ -1408,6 +1477,34 @@ impl ServerReply {
                     char_info(&mut o, 0, *width, *width, *ascent, *descent);
                 }
             }
+            ServerReply::ListFontsWithInfo {
+                sequence,
+                name,
+                ascent,
+                descent,
+                width,
+                first_char,
+                last_char,
+                default_char,
+            } => {
+                let padded = name.len() + pad4(name.len());
+                o.u8(1)
+                    .u8(name.len() as u8)
+                    .u16(*sequence)
+                    .u32((7 + padded / 4) as u32);
+                if name.is_empty() {
+                    o.zeros(52);
+                } else {
+                    char_info(&mut o, 0, *width, *width, *ascent, *descent);
+                    o.zeros(4);
+                    char_info(&mut o, 0, *width, *width, *ascent, *descent);
+                    o.zeros(4);
+                    o.u16(*first_char).u16(*last_char).u16(*default_char).u16(0);
+                    o.u8(0).u8(0).u8(0).u8(1);
+                    o.i16(*ascent).i16(*descent).u32(0);
+                    o.bytes(name).pad();
+                }
+            }
             ServerReply::ListFonts { sequence, names } => {
                 let mut data = Out::new();
                 for name in names {
@@ -1473,6 +1570,59 @@ pub enum ServerEvent {
         event_x: i16,
         event_y: i16,
         state: u16,
+    },
+    Pointer {
+        kind: u8,
+        detail: u8,
+        sequence: u16,
+        time: u32,
+        root: u32,
+        event: u32,
+        child: u32,
+        root_x: i16,
+        root_y: i16,
+        event_x: i16,
+        event_y: i16,
+        state: u16,
+    },
+    Crossing {
+        enter: bool,
+        detail: u8,
+        sequence: u16,
+        time: u32,
+        root: u32,
+        event: u32,
+        child: u32,
+        root_x: i16,
+        root_y: i16,
+        event_x: i16,
+        event_y: i16,
+        state: u16,
+        mode: u8,
+        focus: bool,
+    },
+    SelectionClear {
+        sequence: u16,
+        time: u32,
+        owner: u32,
+        selection: u32,
+    },
+    SelectionRequest {
+        sequence: u16,
+        time: u32,
+        owner: u32,
+        requestor: u32,
+        selection: u32,
+        target: u32,
+        property: u32,
+    },
+    SelectionNotify {
+        sequence: u16,
+        time: u32,
+        requestor: u32,
+        selection: u32,
+        target: u32,
+        property: u32,
     },
 }
 
@@ -1549,6 +1699,83 @@ impl ServerEvent {
                 o.u32(*root).u32(*event).u32(*child);
                 o.i16(*root_x).i16(*root_y).i16(*event_x).i16(*event_y);
                 o.u16(*state).u8(1).u8(0);
+            }
+            ServerEvent::Pointer {
+                kind,
+                detail,
+                sequence,
+                time,
+                root,
+                event,
+                child,
+                root_x,
+                root_y,
+                event_x,
+                event_y,
+                state,
+            } => {
+                o.u8(*kind).u8(*detail).u16(*sequence).u32(*time);
+                o.u32(*root).u32(*event).u32(*child);
+                o.i16(*root_x).i16(*root_y).i16(*event_x).i16(*event_y);
+                o.u16(*state).u8(1).u8(0);
+            }
+            ServerEvent::Crossing {
+                enter,
+                detail,
+                sequence,
+                time,
+                root,
+                event,
+                child,
+                root_x,
+                root_y,
+                event_x,
+                event_y,
+                state,
+                mode,
+                focus,
+            } => {
+                o.u8(if *enter { 7 } else { 8 })
+                    .u8(*detail)
+                    .u16(*sequence)
+                    .u32(*time);
+                o.u32(*root).u32(*event).u32(*child);
+                o.i16(*root_x).i16(*root_y).i16(*event_x).i16(*event_y);
+                o.u16(*state).u8(*mode).u8(2 | *focus as u8);
+            }
+            ServerEvent::SelectionClear {
+                sequence,
+                time,
+                owner,
+                selection,
+            } => {
+                o.u8(29).u8(0).u16(*sequence).u32(*time);
+                o.u32(*owner).u32(*selection).zeros(16);
+            }
+            ServerEvent::SelectionRequest {
+                sequence,
+                time,
+                owner,
+                requestor,
+                selection,
+                target,
+                property,
+            } => {
+                o.u8(30).u8(0).u16(*sequence).u32(*time);
+                o.u32(*owner).u32(*requestor).u32(*selection);
+                o.u32(*target).u32(*property).zeros(4);
+            }
+            ServerEvent::SelectionNotify {
+                sequence,
+                time,
+                requestor,
+                selection,
+                target,
+                property,
+            } => {
+                o.u8(31).u8(0).u16(*sequence).u32(*time);
+                o.u32(*requestor).u32(*selection).u32(*target).u32(*property);
+                o.zeros(8);
             }
         }
         o.0

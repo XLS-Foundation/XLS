@@ -25,6 +25,15 @@ pub const LAST_CHAR: u8 = 255;
 
 const FONTS: &[(&str, bool)] = &[
     ("fixed", false),
+    ("6x13", false),
+    ("-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso10646-1", false),
+    ("-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1", false),
+    ("-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso10646-1", true),
+    ("-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1", true),
+    ("-misc-fixed-medium-r-normal--13-120-75-75-c-70-iso10646-1", false),
+    ("-misc-fixed-medium-r-normal--13-120-75-75-c-70-iso8859-1", false),
+    ("-misc-fixed-bold-r-normal--13-120-75-75-c-70-iso10646-1", true),
+    ("-misc-fixed-bold-r-normal--13-120-75-75-c-70-iso8859-1", true),
     ("8x16", false),
     ("-misc-fixed-medium-r-normal--16-120-100-100-c-80-iso10646-1", false),
     ("-misc-fixed-medium-r-normal--16-120-100-100-c-80-iso8859-1", false),

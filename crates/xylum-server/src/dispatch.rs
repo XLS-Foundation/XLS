@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::atomic::Ordering;
+
 use xylum_protocol::{
     has_reply, request_name, ClientRequest, RawRequest, ServerError, ServerEvent, ServerReply,
     ERROR_ATOM, ERROR_DRAWABLE, ERROR_FONT, ERROR_ID_CHOICE, ERROR_IMPLEMENTATION, ERROR_LENGTH, ERROR_MATCH,
@@ -62,33 +64,7 @@ fn rgb_to_pixel(red: u16, green: u16, blue: u16) -> u32 {
 }
 
 fn lookup_color(name: &str) -> Option<(u16, u16, u16)> {
-    let key: String = name
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_lowercase();
-    let (red, green, blue): (u16, u16, u16) = match key.as_str() {
-        "black" => (0, 0, 0),
-        "white" => (255, 255, 255),
-        "red" => (255, 0, 0),
-        "green" => (0, 255, 0),
-        "blue" => (0, 0, 255),
-        "yellow" => (255, 255, 0),
-        "cyan" => (0, 255, 255),
-        "magenta" => (255, 0, 255),
-        "gray" | "grey" => (190, 190, 190),
-        "lightgray" | "lightgrey" => (211, 211, 211),
-        "darkgray" | "darkgrey" => (169, 169, 169),
-        "orange" => (255, 165, 0),
-        "pink" => (255, 192, 203),
-        "brown" => (165, 42, 42),
-        "purple" => (160, 32, 240),
-        "navy" | "navyblue" => (0, 0, 128),
-        "lightblue" => (173, 216, 230),
-        "darkgreen" => (0, 100, 0),
-        _ => return None,
-    };
-    Some((red * 257, green * 257, blue * 257))
+    crate::colors::lookup(name)
 }
 
 fn mapped_tree(state: &ServerState, root: u32) -> Vec<u32> {
@@ -633,6 +609,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                     root_y,
                     win_x: (root_x as i32 - origin_x) as i16,
                     win_y: (root_y as i32 - origin_y) as i16,
+                    mask: state.modifiers | state.buttons,
                 }
                 .encode(),
             );
@@ -950,6 +927,41 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
             out.push(ServerReply::ListFonts { sequence, names }.encode());
         }
 
+        ClientRequest::ListFontsWithInfo { max_names, pattern } => {
+            let pattern = String::from_utf8_lossy(&pattern).into_owned();
+            for name in font::matching(&pattern)
+                .into_iter()
+                .take(max_names as usize)
+            {
+                out.push(
+                    ServerReply::ListFontsWithInfo {
+                        sequence,
+                        name: name.as_bytes().to_vec(),
+                        ascent: font::ASCENT as i16,
+                        descent: font::DESCENT as i16,
+                        width: font::WIDTH as i16,
+                        first_char: font::FIRST_CHAR as u16,
+                        last_char: font::LAST_CHAR as u16,
+                        default_char: font::FIRST_CHAR as u16,
+                    }
+                    .encode(),
+                );
+            }
+            out.push(
+                ServerReply::ListFontsWithInfo {
+                    sequence,
+                    name: Vec::new(),
+                    ascent: 0,
+                    descent: 0,
+                    width: 0,
+                    first_char: 0,
+                    last_char: 0,
+                    default_char: 0,
+                }
+                .encode(),
+            );
+        }
+
         ClientRequest::ImageText8 {
             drawable,
             gc,
@@ -1111,6 +1123,97 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                 .collect();
             state.framebuffer.fill_polygon(&absolute, clip, color);
             state.dirty = true;
+        }
+
+        ClientRequest::GrabPointer | ClientRequest::GrabKeyboard => {
+            out.push(ServerReply::GrabStatus { sequence, status: 0 }.encode());
+        }
+
+        ClientRequest::SetSelectionOwner { owner, selection } => {
+            let previous = state.selections.get(&selection).copied();
+            if owner == 0 {
+                state.selections.remove(&selection);
+            } else {
+                state.selections.insert(selection, owner);
+            }
+            if let Some(old) = previous {
+                if old != owner {
+                    if let Some(conn) = state.conn_for_window(old) {
+                        let event = ServerEvent::SelectionClear {
+                            sequence: conn.sequence.load(Ordering::Relaxed),
+                            time: state.now(),
+                            owner: old,
+                            selection,
+                        }
+                        .encode();
+                        state.pending.push((conn, event));
+                    }
+                }
+            }
+        }
+
+        ClientRequest::GetSelectionOwner { selection } => {
+            let owner = state
+                .selections
+                .get(&selection)
+                .copied()
+                .filter(|window| state.windows.contains_key(window))
+                .unwrap_or(0);
+            out.push(ServerReply::GetSelectionOwner { sequence, owner }.encode());
+        }
+
+        ClientRequest::ConvertSelection {
+            requestor,
+            selection,
+            target,
+            property,
+        } => {
+            let time = state.now();
+            let owner = state
+                .selections
+                .get(&selection)
+                .copied()
+                .filter(|window| state.windows.contains_key(window));
+            match owner.and_then(|window| state.conn_for_window(window).map(|conn| (window, conn)))
+            {
+                Some((owner_window, conn)) => {
+                    let event = ServerEvent::SelectionRequest {
+                        sequence: conn.sequence.load(Ordering::Relaxed),
+                        time,
+                        owner: owner_window,
+                        requestor,
+                        selection,
+                        target,
+                        property,
+                    }
+                    .encode();
+                    state.pending.push((conn, event));
+                }
+                None => {
+                    out.push(
+                        ServerEvent::SelectionNotify {
+                            sequence,
+                            time,
+                            requestor,
+                            selection,
+                            target,
+                            property: 0,
+                        }
+                        .encode(),
+                    );
+                }
+            }
+        }
+
+        ClientRequest::SendEvent { destination, event } => {
+            if let Some(conn) = state.conn_for_window(destination) {
+                let mut bytes = event;
+                bytes[0] |= 0x80;
+                let current = conn.sequence.load(Ordering::Relaxed).to_le_bytes();
+                bytes[2] = current[0];
+                bytes[3] = current[1];
+                state.pending.push((conn, bytes.to_vec()));
+            }
         }
 
         ClientRequest::Other { opcode } => {

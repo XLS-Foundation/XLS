@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -121,7 +121,47 @@ impl ApplicationHandler for Presenter {
             WindowEvent::CursorMoved { position, .. } => {
                 let x = position.x.round().clamp(0.0, SCREEN_WIDTH as f64 - 1.0) as i16;
                 let y = position.y.round().clamp(0.0, SCREEN_HEIGHT as f64 - 1.0) as i16;
-                self.lock().pointer = (x, y);
+                let deliveries = {
+                    let mut state = self.lock();
+                    state.pointer = (x, y);
+                    input::motion_event(&mut state)
+                };
+                input::send(deliveries);
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
+                button,
+                ..
+            } => {
+                let number = match button {
+                    MouseButton::Left => 1u8,
+                    MouseButton::Middle => 2,
+                    MouseButton::Right => 3,
+                    _ => return,
+                };
+                let pressed = button_state == ElementState::Pressed;
+                let deliveries = {
+                    let mut state = self.lock();
+                    input::button_event(&mut state, number, pressed)
+                };
+                input::send(deliveries);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let vertical = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y as f64,
+                    MouseScrollDelta::PixelDelta(position) => position.y,
+                };
+                if vertical == 0.0 {
+                    return;
+                }
+                let number = if vertical > 0.0 { 4u8 } else { 5u8 };
+                let deliveries = {
+                    let mut state = self.lock();
+                    let mut all = input::button_event(&mut state, number, true);
+                    all.extend(input::button_event(&mut state, number, false));
+                    all
+                };
+                input::send(deliveries);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
