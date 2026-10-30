@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use xylum_protocol::ServerEvent;
 
-use crate::keymap;
 use crate::state::{ClientConn, Delivery, ServerState, ROOT_WINDOW};
 
 struct Context {
@@ -74,8 +73,7 @@ pub fn key_event(
     pressed: bool,
     repeat: bool,
 ) -> Vec<Delivery> {
-    let is_modifier =
-        keymap::modifier_mask(keycode) != 0 || keycode == keymap::CAPS_LOCK_KEYCODE;
+    let is_modifier = state.keymap.modifier(keycode).is_some();
     if repeat && is_modifier {
         return Vec::new();
     }

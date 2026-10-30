@@ -14,121 +14,262 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub const KEYSYMS_PER_KEYCODE: u8 = 2;
+use std::collections::HashMap;
+use std::process::Command;
+
+use xkbcommon::xkb;
+
+pub const KEYSYMS_PER_KEYCODE: u8 = 4;
+
 pub const SHIFT: u16 = 1;
 pub const LOCK: u16 = 2;
 pub const CONTROL: u16 = 4;
 pub const MOD1: u16 = 8;
+pub const MOD2: u16 = 16;
+pub const MOD3: u16 = 32;
 pub const MOD4: u16 = 64;
-pub const CAPS_LOCK_KEYCODE: u8 = 66;
+pub const MOD5: u16 = 128;
+
+const SHIFT_L: u32 = 0xffe1;
+const SHIFT_R: u32 = 0xffe2;
+const CONTROL_L: u32 = 0xffe3;
+const CONTROL_R: u32 = 0xffe4;
+const CAPS_LOCK: u32 = 0xffe5;
+const SHIFT_LOCK: u32 = 0xffe6;
+const META_L: u32 = 0xffe7;
+const META_R: u32 = 0xffe8;
+const ALT_L: u32 = 0xffe9;
+const ALT_R: u32 = 0xffea;
+const SUPER_L: u32 = 0xffeb;
+const SUPER_R: u32 = 0xffec;
+const HYPER_L: u32 = 0xffed;
+const HYPER_R: u32 = 0xffee;
+const NUM_LOCK: u32 = 0xff7f;
+const MODE_SWITCH: u32 = 0xff7e;
+const ISO_LEVEL3_SHIFT: u32 = 0xfe03;
+
+struct LayoutConfig {
+    layout: String,
+    variant: String,
+    options: Option<String>,
+}
+
+impl LayoutConfig {
+    fn describe(&self) -> String {
+        format!(
+            "layout={} variant={} options={}",
+            self.layout,
+            self.variant,
+            self.options.as_deref().unwrap_or("")
+        )
+    }
+}
 
 pub struct Keymap {
-    syms: [[u32; 2]; 256],
+    syms: Vec<[u32; 4]>,
+    modifiers: HashMap<u8, (u16, bool)>,
 }
 
 impl Keymap {
     pub fn new() -> Self {
-        let mut keymap = Keymap {
-            syms: [[0; 2]; 256],
-        };
-        keymap.fill();
-        keymap
-    }
-
-    fn set(&mut self, evdev: usize, plain: u32, shifted: u32) {
-        self.syms[evdev + 8] = [plain, shifted];
-    }
-
-    fn set_chars(&mut self, evdev: usize, plain: char, shifted: char) {
-        self.set(evdev, plain as u32, shifted as u32);
-    }
-
-    fn fill(&mut self) {
-        self.set(1, 0xff1b, 0xff1b);
-
-        for (index, (plain, shifted)) in "1234567890".chars().zip("!@#$%^&*()".chars()).enumerate() {
-            self.set_chars(2 + index, plain, shifted);
+        let config = detect_layout();
+        println!("Xylum: keyboard {}", config.describe());
+        if let Some(keymap) = Self::compile(&config) {
+            return keymap;
         }
+        eprintln!("Xylum: could not compile the keymap, falling back to us");
+        let fallback = LayoutConfig {
+            layout: "us".to_string(),
+            variant: String::new(),
+            options: None,
+        };
+        Self::compile(&fallback).unwrap_or_else(Self::empty)
+    }
 
-        self.set_chars(12, '-', '_');
-        self.set_chars(13, '=', '+');
-        self.set(14, 0xff08, 0xff08);
-        self.set(15, 0xff09, 0xfe20);
+    fn empty() -> Self {
+        Keymap {
+            syms: vec![[0; 4]; 256],
+            modifiers: HashMap::new(),
+        }
+    }
 
-        for (base, row) in [(16usize, "qwertyuiop"), (30, "asdfghjkl"), (44, "zxcvbnm")] {
-            for (index, plain) in row.chars().enumerate() {
-                self.set_chars(base + index, plain, plain.to_ascii_uppercase());
+    fn compile(config: &LayoutConfig) -> Option<Self> {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let compiled = xkb::Keymap::new_from_names(
+            &context,
+            "",
+            "",
+            config.layout.as_str(),
+            config.variant.as_str(),
+            config.options.clone(),
+            xkb::COMPILE_NO_FLAGS,
+        )?;
+
+        let mut syms = vec![[0u32; 4]; 256];
+        let min = compiled.min_keycode().raw();
+        let max = compiled.max_keycode().raw().min(255);
+        for raw in min..=max {
+            let keycode = xkb::Keycode::new(raw);
+            if compiled.num_layouts_for_key(keycode) == 0 {
+                continue;
+            }
+            let levels = compiled.num_levels_for_key(keycode, 0).min(4);
+            for level in 0..levels {
+                if let Some(sym) = compiled.key_get_syms_by_level(keycode, 0, level).first() {
+                    let mut value = sym.raw();
+                    if value == ISO_LEVEL3_SHIFT {
+                        value = MODE_SWITCH;
+                    }
+                    syms[raw as usize][level as usize] = value;
+                }
             }
         }
 
-        self.set_chars(26, '[', '{');
-        self.set_chars(27, ']', '}');
-        self.set(28, 0xff0d, 0xff0d);
-        self.set(29, 0xffe3, 0xffe3);
-        self.set_chars(39, ';', ':');
-        self.set_chars(40, '\'', '"');
-        self.set_chars(41, '`', '~');
-        self.set(42, 0xffe1, 0xffe1);
-        self.set_chars(43, '\\', '|');
-        self.set_chars(51, ',', '<');
-        self.set_chars(52, '.', '>');
-        self.set_chars(53, '/', '?');
-        self.set(54, 0xffe2, 0xffe2);
-        self.set(56, 0xffe9, 0xffe9);
-        self.set_chars(57, ' ', ' ');
-        self.set(58, 0xffe5, 0xffe5);
-
-        for index in 0..10usize {
-            let keysym = 0xffbe + index as u32;
-            self.set(59 + index, keysym, keysym);
+        let mut modifiers = HashMap::new();
+        for code in 8..256usize {
+            let (mask, toggles) = match syms[code][0] {
+                SHIFT_L | SHIFT_R => (SHIFT, false),
+                CAPS_LOCK | SHIFT_LOCK => (LOCK, true),
+                CONTROL_L | CONTROL_R => (CONTROL, false),
+                ALT_L | ALT_R | META_L | META_R => (MOD1, false),
+                NUM_LOCK => (MOD2, true),
+                SUPER_L | SUPER_R | HYPER_L | HYPER_R => (MOD4, false),
+                MODE_SWITCH => (MOD5, false),
+                _ => continue,
+            };
+            modifiers.insert(code as u8, (mask, toggles));
         }
 
-        self.set(69, 0xff7f, 0xff7f);
-        self.set(70, 0xff14, 0xff14);
-        self.set_chars(86, '<', '>');
-        self.set(87, 0xffc8, 0xffc8);
-        self.set(88, 0xffc9, 0xffc9);
-        self.set(97, 0xffe4, 0xffe4);
-        self.set(100, 0xffea, 0xffea);
-        self.set(102, 0xff50, 0xff50);
-        self.set(103, 0xff52, 0xff52);
-        self.set(104, 0xff55, 0xff55);
-        self.set(105, 0xff51, 0xff51);
-        self.set(106, 0xff53, 0xff53);
-        self.set(107, 0xff57, 0xff57);
-        self.set(108, 0xff54, 0xff54);
-        self.set(109, 0xff56, 0xff56);
-        self.set(110, 0xff63, 0xff63);
-        self.set(111, 0xffff, 0xffff);
-        self.set(125, 0xffeb, 0xffeb);
-        self.set(126, 0xffec, 0xffec);
+        Some(Keymap { syms, modifiers })
     }
 
     pub fn keysyms(&self, first_keycode: u8, count: u8) -> Vec<u32> {
-        let mut keysyms = Vec::with_capacity(count as usize * 2);
+        let mut keysyms = Vec::with_capacity(count as usize * 4);
         for offset in 0..count as usize {
             let entry = self
                 .syms
                 .get(first_keycode as usize + offset)
                 .copied()
-                .unwrap_or([0, 0]);
-            keysyms.push(entry[0]);
-            keysyms.push(entry[1]);
+                .unwrap_or([0; 4]);
+            keysyms.extend_from_slice(&entry);
         }
         keysyms
     }
-}
 
-pub fn modifier_mask(keycode: u8) -> u16 {
-    match keycode {
-        50 | 62 => SHIFT,
-        37 | 105 => CONTROL,
-        64 | 108 => MOD1,
-        133 | 134 => MOD4,
-        _ => 0,
+    pub fn modifier(&self, keycode: u8) -> Option<(u16, bool)> {
+        self.modifiers.get(&keycode).copied()
+    }
+
+    pub fn initial_modifiers(&self) -> u16 {
+        if self.modifiers.values().any(|(mask, _)| *mask == MOD2) {
+            MOD2
+        } else {
+            0
+        }
+    }
+
+    pub fn modifier_keycodes(&self) -> Vec<u8> {
+        let order = [SHIFT, LOCK, CONTROL, MOD1, MOD2, MOD3, MOD4, MOD5];
+        let mut result = vec![0u8; 16];
+        for (slot, mask) in order.iter().enumerate() {
+            let mut codes: Vec<u8> = self
+                .modifiers
+                .iter()
+                .filter(|(_, (candidate, _))| candidate == mask)
+                .map(|(code, _)| *code)
+                .collect();
+            codes.sort_unstable();
+            for (index, code) in codes.into_iter().take(2).enumerate() {
+                result[slot * 2 + index] = code;
+            }
+        }
+        result
     }
 }
 
-pub fn modifier_keycodes() -> Vec<u8> {
-    vec![50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 0, 0]
+fn detect_layout() -> LayoutConfig {
+    if let Ok(layout) = std::env::var("XYLUM_XKB_LAYOUT") {
+        return LayoutConfig {
+            layout,
+            variant: std::env::var("XYLUM_XKB_VARIANT").unwrap_or_default(),
+            options: std::env::var("XYLUM_XKB_OPTIONS").ok(),
+        };
+    }
+    if let Ok(layout) = std::env::var("XKB_DEFAULT_LAYOUT") {
+        return LayoutConfig {
+            layout,
+            variant: std::env::var("XKB_DEFAULT_VARIANT").unwrap_or_default(),
+            options: std::env::var("XKB_DEFAULT_OPTIONS").ok(),
+        };
+    }
+    if let Some(config) = from_setxkbmap() {
+        return config;
+    }
+    if let Some(config) = from_xorg_conf() {
+        return config;
+    }
+    LayoutConfig {
+        layout: "us".to_string(),
+        variant: String::new(),
+        options: None,
+    }
+}
+
+fn from_setxkbmap() -> Option<LayoutConfig> {
+    let output = Command::new("setxkbmap").arg("-query").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut layout = None;
+    let mut variant = String::new();
+    let mut options = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().to_string();
+        match key.trim() {
+            "layout" => layout = Some(value),
+            "variant" => variant = value,
+            "options" if !value.is_empty() => options = Some(value),
+            _ => {}
+        }
+    }
+    Some(LayoutConfig {
+        layout: layout?,
+        variant,
+        options,
+    })
+}
+
+fn from_xorg_conf() -> Option<LayoutConfig> {
+    let mut layout = None;
+    let mut variant = String::new();
+    let mut options = None;
+    for entry in std::fs::read_dir("/etc/X11/xorg.conf.d").ok()?.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for line in text.lines() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split('"').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            match parts[1] {
+                "XkbLayout" => layout = Some(parts[3].to_string()),
+                "XkbVariant" => variant = parts[3].to_string(),
+                "XkbOptions" => options = Some(parts[3].to_string()),
+                _ => {}
+            }
+        }
+    }
+    Some(LayoutConfig {
+        layout: layout?,
+        variant,
+        options,
+    })
 }

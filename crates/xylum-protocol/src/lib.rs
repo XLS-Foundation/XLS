@@ -36,6 +36,8 @@ pub const ERROR_NAME: u8 = 15;
 pub const ERROR_LENGTH: u8 = 16;
 pub const ERROR_IMPLEMENTATION: u8 = 17;
 
+pub const SHM_MAJOR_OPCODE: u8 = 130;
+
 const REQUEST_NAMES: &[&str] = &[
     "",
     "CreateWindow",
@@ -758,6 +760,32 @@ pub enum ClientRequest {
         y: i16,
         items: Vec<(i8, Vec<u8>)>,
     },
+    ShmQueryVersion,
+    ShmAttach {
+        shmseg: u32,
+        shmid: u32,
+        read_only: bool,
+    },
+    ShmDetach {
+        shmseg: u32,
+    },
+    ShmPutImage {
+        drawable: u32,
+        gc: u32,
+        total_width: u16,
+        total_height: u16,
+        src_x: u16,
+        src_y: u16,
+        src_width: u16,
+        src_height: u16,
+        dst_x: i16,
+        dst_y: i16,
+        depth: u8,
+        format: u8,
+        send_event: bool,
+        shmseg: u32,
+        offset: u32,
+    },
     Other { opcode: u8 },
 }
 
@@ -765,6 +793,61 @@ impl ClientRequest {
     pub fn parse(raw: &RawRequest) -> io::Result<Self> {
         let mut r = Reader::new(&raw.body);
         let request = match raw.opcode {
+            SHM_MAJOR_OPCODE => {
+                let minor = raw.data;
+                match minor {
+                    0 => ClientRequest::ShmQueryVersion,
+                    1 => {
+                        let shmseg = r.u32()?;
+                        let shmid = r.u32()?;
+                        let read_only = r.u8()? != 0;
+                        ClientRequest::ShmAttach {
+                            shmseg,
+                            shmid,
+                            read_only,
+                        }
+                    }
+                    2 => ClientRequest::ShmDetach {
+                        shmseg: r.u32()?,
+                    },
+                    3 => {
+                        let drawable = r.u32()?;
+                        let gc = r.u32()?;
+                        let total_width = r.u16()?;
+                        let total_height = r.u16()?;
+                        let src_x = r.u16()?;
+                        let src_y = r.u16()?;
+                        let src_width = r.u16()?;
+                        let src_height = r.u16()?;
+                        let dst_x = r.i16()?;
+                        let dst_y = r.i16()?;
+                        let depth = r.u8()?;
+                        let format = r.u8()?;
+                        let send_event = r.u8()? != 0;
+                        r.skip(1)?;
+                        let shmseg = r.u32()?;
+                        let offset = r.u32()?;
+                        ClientRequest::ShmPutImage {
+                            drawable,
+                            gc,
+                            total_width,
+                            total_height,
+                            src_x,
+                            src_y,
+                            src_width,
+                            src_height,
+                            dst_x,
+                            dst_y,
+                            depth,
+                            format,
+                            send_event,
+                            shmseg,
+                            offset,
+                        }
+                    }
+                    _ => ClientRequest::Other { opcode: raw.opcode },
+                }
+            }
             1 => {
                 let wid = r.u32()?;
                 let parent = r.u32()?;
@@ -1370,6 +1453,9 @@ pub enum ServerReply {
         last_char: u16,
         default_char: u16,
     },
+    ShmQueryVersion {
+        sequence: u16,
+    },
 }
 
 fn char_info(o: &mut Out, left: i16, right: i16, width: i16, ascent: i16, descent: i16) {
@@ -1385,6 +1471,18 @@ impl ServerReply {
     pub fn encode(&self) -> Vec<u8> {
         let mut o = Out::new();
         match self {
+            ServerReply::ShmQueryVersion { sequence } => {
+                o.u8(1)
+                    .u8(1)
+                    .u16(*sequence)
+                    .u32(0)
+                    .u16(1)
+                    .u16(2)
+                    .u16(unsafe { libc::getuid() } as u16)
+                    .u16(unsafe { libc::getgid() } as u16)
+                    .u8(2)
+                    .zeros(15);
+            }
             ServerReply::GetWindowAttributes {
                 sequence,
                 visual,

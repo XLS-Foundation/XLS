@@ -20,6 +20,7 @@ use xylum_protocol::{
     has_reply, request_name, ClientRequest, RawRequest, ServerError, ServerEvent, ServerReply,
     ERROR_ALLOC, ERROR_ATOM, ERROR_DRAWABLE, ERROR_FONT, ERROR_ID_CHOICE, ERROR_IMPLEMENTATION, ERROR_LENGTH, ERROR_MATCH,
     ERROR_NAME, ERROR_VALUE, ERROR_WINDOW, EVENT_MASK_EXPOSURE, EVENT_MASK_STRUCTURE_NOTIFY,
+    SHM_MAJOR_OPCODE,
 };
 
 use crate::font;
@@ -209,7 +210,82 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
     };
 
     match request {
-        ClientRequest::CreateWindow {
+        ClientRequest::ShmQueryVersion => {
+            out.push(ServerReply::ShmQueryVersion { sequence }.encode());
+        }
+
+        ClientRequest::ShmAttach { shmseg, shmid, read_only: _ } => {
+            unsafe {
+                let ptr = libc::shmat(shmid as i32, std::ptr::null(), 0);
+                if ptr == (-1isize) as *mut libc::c_void {
+                    out.push(error(ERROR_VALUE, sequence, shmid, op));
+                } else {
+                    state.shm_segments.insert(shmseg, crate::state::ShmPtr(ptr as *mut u8));
+                }
+            }
+        }
+
+        ClientRequest::ShmDetach { shmseg } => {
+            if let Some(ptr) = state.shm_segments.remove(&shmseg) {
+                unsafe { libc::shmdt(ptr.0 as *const libc::c_void); }
+            }
+        }
+
+        ClientRequest::ShmPutImage {
+            drawable,
+            gc: _,
+            total_width,
+            src_x,
+            src_y,
+            src_width,
+            src_height,
+            dst_x,
+            dst_y,
+            shmseg,
+            offset,
+            ..
+        } => {
+            if too_large(src_width, src_height) {
+                return out;
+            }
+            let Some(shm) = state.shm_segments.get(&shmseg) else {
+                out.push(error(ERROR_MATCH, sequence, shmseg, op));
+                return out;
+            };
+            let base = shm.0;
+            let Some((origin_x, origin_y, clip)) = state.target(drawable) else {
+                out.push(error(ERROR_DRAWABLE, sequence, drawable, op));
+                return out;
+            };
+
+            let stride = total_width as usize * 4;
+            let mut pixels: Vec<Option<u32>> = Vec::with_capacity(src_width as usize * src_height as usize);
+
+            for row in 0..src_height {
+                for col in 0..src_width {
+                    let x = src_x + col;
+                    let y = src_y + row;
+                    let pixel_offset = offset as usize + (y as usize * stride) + (x as usize * 4);
+                    let b = unsafe { *base.add(pixel_offset) };
+                    let g = unsafe { *base.add(pixel_offset + 1) };
+                    let r = unsafe { *base.add(pixel_offset + 2) };
+                    let color = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    pixels.push(Some(color));
+                }
+            }
+
+            state.surface(drawable).write_rect(
+                origin_x + dst_x as i32,
+                origin_y + dst_y as i32,
+                src_width as i32,
+                src_height as i32,
+                clip,
+                &pixels,
+            );
+            state.dirty = true;
+        }
+
+        ClientRequest::CreateWindow{
             depth,
             wid,
             parent,
@@ -657,12 +733,20 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
         }
 
         ClientRequest::QueryExtension { name } => {
-            println!("Xylum: QueryExtension {:?}", String::from_utf8_lossy(&name));
+            let name_str = String::from_utf8_lossy(&name);
+            println!("Xylum: QueryExtension {:?}", name_str);
+
+            let (present, major_opcode) = if name_str == "MIT-SHM" {
+                (true, SHM_MAJOR_OPCODE)
+            } else {
+                (false, 0)
+            };
+
             out.push(
                 ServerReply::QueryExtension {
                     sequence,
-                    present: false,
-                    major_opcode: 0,
+                    present,
+                    major_opcode,
                     first_event: 0,
                     first_error: 0,
                 }
@@ -703,7 +787,7 @@ pub fn process(state: &mut ServerState, sequence: u16, raw: &RawRequest) -> Vec<
                 ServerReply::GetModifierMapping {
                     sequence,
                     keycodes_per_modifier: 2,
-                    keycodes: keymap::modifier_keycodes(),
+                    keycodes: state.keymap.modifier_keycodes(),
                 }
                 .encode(),
             );

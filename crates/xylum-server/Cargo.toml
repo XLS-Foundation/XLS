@@ -15,3 +15,5 @@ xylum-protocol = { path = "../xylum-protocol" }
 xylum-auth = { path = "../xylum-auth" }
 winit = "0.30"
 softbuffer = "0.4"
+xkbcommon = "0.9"
+libc = "0.2"

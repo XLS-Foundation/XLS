@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::gfx::{Clip, Framebuffer};
-use crate::keymap::{self, Keymap};
+use crate::keymap::Keymap;
 
 pub const ROOT_WINDOW: u32 = 1;
 pub const ROOT_VISUAL: u32 = 0x20;
@@ -33,75 +33,26 @@ pub const SCREEN_DEPTH: u8 = 24;
 pub const RESOURCE_ID_MASK: u32 = 0x001f_ffff;
 pub const CLASS_INPUT_OUTPUT: u16 = 1;
 
+/// Wrapper para o ponteiro do segmento SHM.
+/// `unsafe impl Send + Sync` é seguro aqui porque o segmento existe
+/// enquanto estiver atado (kernel), e acessos concorrentes ao mesmo
+/// segmento são responsabilidade do cliente.
+pub struct ShmPtr(pub *mut u8);
+unsafe impl Send for ShmPtr {}
+unsafe impl Sync for ShmPtr {}
+
 const PREDEFINED_ATOMS: &[&str] = &[
-    "PRIMARY",
-    "SECONDARY",
-    "ARC",
-    "ATOM",
-    "BITMAP",
-    "CARDINAL",
-    "COLORMAP",
-    "CURSOR",
-    "CUT_BUFFER0",
-    "CUT_BUFFER1",
-    "CUT_BUFFER2",
-    "CUT_BUFFER3",
-    "CUT_BUFFER4",
-    "CUT_BUFFER5",
-    "CUT_BUFFER6",
-    "CUT_BUFFER7",
-    "DRAWABLE",
-    "FONT",
-    "INTEGER",
-    "PIXMAP",
-    "POINT",
-    "RECTANGLE",
-    "RESOURCE_MANAGER",
-    "RGB_COLOR_MAP",
-    "RGB_BEST_MAP",
-    "RGB_BLUE_MAP",
-    "RGB_DEFAULT_MAP",
-    "RGB_GRAY_MAP",
-    "RGB_GREEN_MAP",
-    "RGB_RED_MAP",
-    "STRING",
-    "VISUALID",
-    "WINDOW",
-    "WM_COMMAND",
-    "WM_HINTS",
-    "WM_CLIENT_MACHINE",
-    "WM_ICON_NAME",
-    "WM_ICON_SIZE",
-    "WM_NAME",
-    "WM_NORMAL_HINTS",
-    "WM_SIZE_HINTS",
-    "WM_ZOOM_HINTS",
-    "MIN_SPACE",
-    "NORM_SPACE",
-    "MAX_SPACE",
-    "END_SPACE",
-    "SUPERSCRIPT_X",
-    "SUPERSCRIPT_Y",
-    "SUBSCRIPT_X",
-    "SUBSCRIPT_Y",
-    "UNDERLINE_POSITION",
-    "UNDERLINE_THICKNESS",
-    "STRIKEOUT_ASCENT",
-    "STRIKEOUT_DESCENT",
-    "ITALIC_ANGLE",
-    "X_HEIGHT",
-    "QUAD_WIDTH",
-    "WEIGHT",
-    "POINT_SIZE",
-    "RESOLUTION",
-    "COPYRIGHT",
-    "NOTICE",
-    "FONT_NAME",
-    "FAMILY_NAME",
-    "FULL_NAME",
-    "CAP_HEIGHT",
-    "WM_CLASS",
-    "WM_TRANSIENT_FOR",
+    "PRIMARY", "SECONDARY", "ARC", "ATOM", "BITMAP", "CARDINAL", "COLORMAP", "CURSOR",
+    "CUT_BUFFER0", "CUT_BUFFER1", "CUT_BUFFER2", "CUT_BUFFER3", "CUT_BUFFER4", "CUT_BUFFER5",
+    "CUT_BUFFER6", "CUT_BUFFER7", "DRAWABLE", "FONT", "INTEGER", "PIXMAP", "POINT", "RECTANGLE",
+    "RESOURCE_MANAGER", "RGB_COLOR_MAP", "RGB_BEST_MAP", "RGB_BLUE_MAP", "RGB_DEFAULT_MAP",
+    "RGB_GRAY_MAP", "RGB_GREEN_MAP", "RGB_RED_MAP", "STRING", "VISUALID", "WINDOW", "WM_COMMAND",
+    "WM_HINTS", "WM_CLIENT_MACHINE", "WM_ICON_NAME", "WM_ICON_SIZE", "WM_NAME", "WM_NORMAL_HINTS",
+    "WM_SIZE_HINTS", "WM_ZOOM_HINTS", "MIN_SPACE", "NORM_SPACE", "MAX_SPACE", "END_SPACE",
+    "SUPERSCRIPT_X", "SUPERSCRIPT_Y", "SUBSCRIPT_X", "SUBSCRIPT_Y", "UNDERLINE_POSITION",
+    "UNDERLINE_THICKNESS", "STRIKEOUT_ASCENT", "STRIKEOUT_DESCENT", "ITALIC_ANGLE", "X_HEIGHT",
+    "QUAD_WIDTH", "WEIGHT", "POINT_SIZE", "RESOLUTION", "COPYRIGHT", "NOTICE", "FONT_NAME",
+    "FAMILY_NAME", "FULL_NAME", "CAP_HEIGHT", "WM_CLASS", "WM_TRANSIENT_FOR",
 ];
 
 pub struct AtomTable {
@@ -111,37 +62,25 @@ pub struct AtomTable {
 
 impl AtomTable {
     pub fn new() -> Self {
-        let mut table = AtomTable {
-            names: Vec::new(),
-            ids: HashMap::new(),
-        };
+        let mut table = AtomTable { names: Vec::new(), ids: HashMap::new() };
         for name in PREDEFINED_ATOMS {
             table.insert(name.to_string());
         }
         table
     }
-
     fn insert(&mut self, name: String) -> u32 {
         self.names.push(name.clone());
         let id = self.names.len() as u32;
         self.ids.insert(name, id);
         id
     }
-
     pub fn intern(&mut self, name: &str, only_if_exists: bool) -> u32 {
-        if let Some(id) = self.ids.get(name) {
-            return *id;
-        }
-        if only_if_exists {
-            return 0;
-        }
+        if let Some(id) = self.ids.get(name) { return *id; }
+        if only_if_exists { return 0; }
         self.insert(name.to_string())
     }
-
     pub fn name(&self, atom: u32) -> Option<&str> {
-        if atom == 0 {
-            return None;
-        }
+        if atom == 0 { return None; }
         self.names.get(atom as usize - 1).map(|s| s.as_str())
     }
 }
@@ -162,30 +101,11 @@ pub struct Window {
     pub background_pixel: Option<u32>,
 }
 
-pub struct Property {
-    pub type_: u32,
-    pub format: u8,
-    pub data: Vec<u8>,
-}
-
-pub struct ClientConn {
-    pub writer: Mutex<UnixStream>,
-    pub sequence: AtomicU16,
-}
-
-pub struct Pixmap {
-    pub depth: u8,
-    pub fb: Framebuffer,
-}
-
+pub struct Property { pub type_: u32, pub format: u8, pub data: Vec<u8> }
+pub struct ClientConn { pub writer: Mutex<UnixStream>, pub sequence: AtomicU16 }
+pub struct Pixmap { pub depth: u8, pub fb: Framebuffer }
 pub type Delivery = (Arc<ClientConn>, Vec<u8>);
-
-pub struct Gc {
-    pub foreground: u32,
-    pub background: u32,
-    pub line_width: u16,
-    pub font: u32,
-}
+pub struct Gc { pub foreground: u32, pub background: u32, pub line_width: u16, pub font: u32 }
 
 pub struct ServerState {
     pub windows: HashMap<u32, Window>,
@@ -194,6 +114,7 @@ pub struct ServerState {
     pub gcs: HashMap<u32, Gc>,
     pub fonts: HashMap<u32, bool>,
     pub pixmaps: HashMap<u32, Pixmap>,
+    pub shm_segments: HashMap<u32, ShmPtr>,
     pub framebuffer: Framebuffer,
     pub pointer: (i16, i16),
     pub dirty: bool,
@@ -214,50 +135,22 @@ pub struct ServerState {
 impl ServerState {
     pub fn new() -> Self {
         let mut windows = HashMap::new();
-        windows.insert(
-            ROOT_WINDOW,
-            Window {
-                parent: 0,
-                x: 0,
-                y: 0,
-                width: SCREEN_WIDTH,
-                height: SCREEN_HEIGHT,
-                border_width: 0,
-                depth: SCREEN_DEPTH,
-                class: CLASS_INPUT_OUTPUT,
-                visual: ROOT_VISUAL,
-                mapped: true,
-                override_redirect: false,
-                event_mask: 0,
-                background_pixel: None,
-            },
-        );
+        windows.insert(ROOT_WINDOW, Window {
+            parent: 0, x: 0, y: 0, width: SCREEN_WIDTH, height: SCREEN_HEIGHT,
+            border_width: 0, depth: SCREEN_DEPTH, class: CLASS_INPUT_OUTPUT, visual: ROOT_VISUAL,
+            mapped: true, override_redirect: false, event_mask: 0, background_pixel: None,
+        });
+        let keymap = Keymap::new();
         ServerState {
-            windows,
-            atoms: AtomTable::new(),
-            properties: HashMap::new(),
-            gcs: HashMap::new(),
-            fonts: HashMap::new(),
-            pixmaps: HashMap::new(),
-            framebuffer: Framebuffer::new(
-                SCREEN_WIDTH as usize,
-                SCREEN_HEIGHT as usize,
-                ROOT_BACKGROUND,
-            ),
-            pointer: (100, 100),
-            dirty: true,
-            clients: HashMap::new(),
-            modifiers: 0,
-            focus: 1,
-            focus_revert: 0,
-            started: Instant::now(),
-            keymap: Keymap::new(),
-            buttons: 0,
-            last_pointer_window: ROOT_WINDOW,
-            implicit_grab: None,
-            selections: HashMap::new(),
-            pending: Vec::new(),
-            client_counter: 0,
+            windows, atoms: AtomTable::new(), properties: HashMap::new(),
+            gcs: HashMap::new(), fonts: HashMap::new(), pixmaps: HashMap::new(),
+            shm_segments: HashMap::new(),
+            framebuffer: Framebuffer::new(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize, ROOT_BACKGROUND),
+            pointer: (100, 100), dirty: true, clients: HashMap::new(),
+            modifiers: keymap.initial_modifiers(), focus: 1, focus_revert: 0,
+            started: Instant::now(), keymap, buttons: 0,
+            last_pointer_window: ROOT_WINDOW, implicit_grab: None,
+            selections: HashMap::new(), pending: Vec::new(), client_counter: 0,
         }
     }
 
@@ -270,12 +163,8 @@ impl ServerState {
     pub fn is_viewable(&self, id: u32) -> bool {
         let mut current = id;
         while let Some(window) = self.windows.get(&current) {
-            if !window.mapped {
-                return false;
-            }
-            if window.parent == 0 {
-                return true;
-            }
+            if !window.mapped { return false; }
+            if window.parent == 0 { return true; }
             current = window.parent;
         }
         false
@@ -287,9 +176,7 @@ impl ServerState {
         while let Some(current) = stack.pop() {
             doomed.push(current);
             for (child_id, window) in &self.windows {
-                if window.parent == current {
-                    stack.push(*child_id);
-                }
+                if window.parent == current { stack.push(*child_id); }
             }
         }
         for window_id in doomed {
@@ -302,9 +189,7 @@ impl ServerState {
         self.clients.get(&(window & !RESOURCE_ID_MASK)).cloned()
     }
 
-    pub fn now(&self) -> u32 {
-        self.started.elapsed().as_millis() as u32
-    }
+    pub fn now(&self) -> u32 { self.started.elapsed().as_millis() as u32 }
 
     pub fn surface(&mut self, id: u32) -> &mut Framebuffer {
         match self.pixmaps.get_mut(&id) {
@@ -325,28 +210,21 @@ impl ServerState {
     }
 
     pub fn update_modifiers(&mut self, keycode: u8, pressed: bool) {
-        let mask = keymap::modifier_mask(keycode);
-        if mask != 0 {
-            if pressed {
-                self.modifiers |= mask;
-            } else {
-                self.modifiers &= !mask;
-            }
-        } else if keycode == keymap::CAPS_LOCK_KEYCODE && pressed {
-            self.modifiers ^= keymap::LOCK;
+        let Some((mask, toggles)) = self.keymap.modifier(keycode) else { return; };
+        if toggles {
+            if pressed { self.modifiers ^= mask; }
+        } else if pressed {
+            self.modifiers |= mask;
+        } else {
+            self.modifiers &= !mask;
         }
     }
 
     pub fn origin(&self, id: u32) -> (i32, i32) {
-        let mut x = 0i32;
-        let mut y = 0i32;
-        let mut current = id;
+        let mut x = 0i32; let mut y = 0i32; let mut current = id;
         while let Some(window) = self.windows.get(&current) {
-            if window.parent == 0 {
-                break;
-            }
-            x += window.x as i32;
-            y += window.y as i32;
+            if window.parent == 0 { break; }
+            x += window.x as i32; y += window.y as i32;
             current = window.parent;
         }
         (x, y)
@@ -354,18 +232,14 @@ impl ServerState {
 
     pub fn window_at(&self, x: i32, y: i32) -> u32 {
         let mut current = ROOT_WINDOW;
-        let mut origin_x = 0i32;
-        let mut origin_y = 0i32;
+        let mut origin_x = 0i32; let mut origin_y = 0i32;
         loop {
             let mut best: Option<(u32, i32, i32)> = None;
             for (id, window) in &self.windows {
-                if window.parent != current || !window.mapped {
-                    continue;
-                }
+                if window.parent != current || !window.mapped { continue; }
                 let left = origin_x + window.x as i32;
                 let top = origin_y + window.y as i32;
-                let inside = x >= left
-                    && y >= top
+                let inside = x >= left && y >= top
                     && x < left + window.width as i32
                     && y < top + window.height as i32;
                 if inside && best.map_or(true, |(best_id, _, _)| *id > best_id) {
@@ -374,9 +248,7 @@ impl ServerState {
             }
             match best {
                 Some((id, left, top)) => {
-                    current = id;
-                    origin_x = left;
-                    origin_y = top;
+                    current = id; origin_x = left; origin_y = top;
                 }
                 None => return current,
             }
@@ -385,43 +257,26 @@ impl ServerState {
 
     pub fn target(&self, id: u32) -> Option<(i32, i32, Clip)> {
         if let Some(pixmap) = self.pixmaps.get(&id) {
-            return Some((
-                0,
-                0,
-                (0, 0, pixmap.fb.width as i32, pixmap.fb.height as i32),
-            ));
+            return Some((0, 0, (0, 0, pixmap.fb.width as i32, pixmap.fb.height as i32)));
         }
-        if !self.is_viewable(id) {
-            return None;
-        }
+        if !self.is_viewable(id) { return None; }
         let mut chain = Vec::new();
         let mut current = id;
         while let Some(window) = self.windows.get(&current) {
             chain.push(current);
-            if window.parent == 0 {
-                break;
-            }
+            if window.parent == 0 { break; }
             current = window.parent;
         }
         chain.reverse();
-
-        let mut origin_x = 0i32;
-        let mut origin_y = 0i32;
-        let mut clip: Clip = (
-            0,
-            0,
-            self.framebuffer.width as i32,
-            self.framebuffer.height as i32,
-        );
+        let mut origin_x = 0i32; let mut origin_y = 0i32;
+        let mut clip: Clip = (0, 0, self.framebuffer.width as i32, self.framebuffer.height as i32);
         for window_id in chain {
             let window = &self.windows[&window_id];
             if window.parent != 0 {
-                origin_x += window.x as i32;
-                origin_y += window.y as i32;
+                origin_x += window.x as i32; origin_y += window.y as i32;
             }
             clip = (
-                clip.0.max(origin_x),
-                clip.1.max(origin_y),
+                clip.0.max(origin_x), clip.1.max(origin_y),
                 clip.2.min(origin_x + window.width as i32),
                 clip.3.min(origin_y + window.height as i32),
             );
@@ -430,60 +285,43 @@ impl ServerState {
     }
 
     pub fn clear_window_area(&mut self, id: u32, x: i32, y: i32, width: i32, height: i32) {
-        let Some((origin_x, origin_y, clip)) = self.target(id) else {
-            return;
-        };
-        let Some(color) = self.windows.get(&id).and_then(|w| w.background_pixel) else {
-            return;
-        };
-        self.framebuffer
-            .fill_rect(origin_x + x, origin_y + y, width, height, clip, color);
+        let Some((origin_x, origin_y, clip)) = self.target(id) else { return; };
+        let Some(color) = self.windows.get(&id).and_then(|w| w.background_pixel) else { return; };
+        self.framebuffer.fill_rect(origin_x + x, origin_y + y, width, height, clip, color);
         self.dirty = true;
     }
 
     pub fn erase_window(&mut self, id: u32) {
-        let Some((origin_x, origin_y, clip)) = self.target(id) else {
-            return;
-        };
-        let (width, height) = self
-            .windows
-            .get(&id)
-            .map(|w| (w.width as i32, w.height as i32))
-            .unwrap_or((0, 0));
-        self.framebuffer
-            .fill_rect(origin_x, origin_y, width, height, clip, ROOT_BACKGROUND);
+        let Some((origin_x, origin_y, clip)) = self.target(id) else { return; };
+        let (width, height) = self.windows.get(&id).map(|w| (w.width as i32, w.height as i32)).unwrap_or((0, 0));
+        self.framebuffer.fill_rect(origin_x, origin_y, width, height, clip, ROOT_BACKGROUND);
         self.dirty = true;
     }
 
     pub fn drop_client(&mut self, base: u32) {
         self.clients.remove(&base);
-        self.selections
-            .retain(|_, window| *window & !RESOURCE_ID_MASK != base);
-        if self
-            .implicit_grab
-            .is_some_and(|window| window & !RESOURCE_ID_MASK == base)
-        {
+        self.selections.retain(|_, window| *window & !RESOURCE_ID_MASK != base);
+        if self.implicit_grab.is_some_and(|w| w & !RESOURCE_ID_MASK == base) {
             self.implicit_grab = None;
         }
         if self.last_pointer_window & !RESOURCE_ID_MASK == base {
             self.last_pointer_window = ROOT_WINDOW;
         }
-        let owned: Vec<u32> = self
-            .windows
-            .keys()
-            .copied()
-            .filter(|id| *id & !RESOURCE_ID_MASK == base)
-            .collect();
-        for id in owned {
-            self.erase_window(id);
-        }
-        self.windows
-            .retain(|id, _| *id & !RESOURCE_ID_MASK != base);
+        let owned: Vec<u32> = self.windows.keys().copied()
+            .filter(|id| *id & !RESOURCE_ID_MASK == base).collect();
+        for id in owned { self.erase_window(id); }
+        self.windows.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
         self.gcs.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
         self.fonts.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
         self.pixmaps.retain(|id, _| *id & !RESOURCE_ID_MASK != base);
+        let shm_owned: Vec<u32> = self.shm_segments.keys().copied()
+            .filter(|id| *id & !RESOURCE_ID_MASK == base).collect();
+        for id in shm_owned {
+            if let Some(ptr) = self.shm_segments.remove(&id) {
+                unsafe { libc::shmdt(ptr.0 as *const libc::c_void); }
+            }
+        }
         let windows = &self.windows;
-        self.properties
-            .retain(|key, _| windows.contains_key(&key.0));
+        self.properties.retain(|key, _| windows.contains_key(&key.0));
     }
 }

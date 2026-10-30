@@ -1917,6 +1917,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
+name = "xkbcommon"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
+dependencies = [
+ "libc",
+ "memmap2",
+ "xkeysym",
+]
+
+[[package]]
 name = "xkbcommon-dl"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1942,13 +1953,18 @@ version = "0.1.0"
 [[package]]
 name = "xylum-protocol"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "xylum-server"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "softbuffer",
  "winit",
+ "xkbcommon",
  "xylum-auth",
  "xylum-protocol",
 ]

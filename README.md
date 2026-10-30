@@ -35,6 +35,7 @@ Xylum is in **early development**, but the core X11 protocol is already function
 - [X] **Colors:** 256-color palette and named color lookup (`RGB` database).
 - [X] **Input:** Keyboard routing and mouse tracking.
 - [X] **Software Rendering:** Direct framebuffer presentation via `softbuffer`.
+- [X] **MIT-SHM (Shared Memory):** `ShmQueryVersion`, `ShmAttach`, `ShmDetach` and `ShmPutImage` implemented for zero-copy pixel uploads.
 
 ## Screenshots
 
@@ -88,7 +89,6 @@ DISPLAY=:2 xcalc
 
 We are currently working towards a fully functional, accelerated X11 server. Next up:
 
-- [ ] **MIT-SHM (Shared Memory):** Huge performance boost for apps sending large buffers (like `xterm`).
 - [ ] **Window Management Support:** Implement `ReparentWindow` and `SubstructureRedirect` so real Window Managers (like i3 or openbox) can run.
 - [ ] **Vulkan Backend:** Replace `softbuffer` with a Vulkan-based presenter.
 - [ ] **XRender Extension:** For anti-aliased text and modern UI elements.
